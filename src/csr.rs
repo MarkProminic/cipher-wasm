@@ -82,11 +82,17 @@ pub fn build(key: &PrivateKey, subject: &NameMap, sans: &[San], eku: &[String]) 
     let mut attributes: SetOfVec<Attribute> = SetOfVec::new();
     let mut exts: Vec<Extension> = Vec::new();
     if !sans.is_empty() {
-        let names = sans.iter().map(x509::san_to_general_name).collect::<Result<Vec<_>>>()?;
+        let names = sans
+            .iter()
+            .map(x509::san_to_general_name)
+            .collect::<Result<Vec<_>>>()?;
         exts.push(SubjectAltName(names).to_extension(&subject, &exts)?);
     }
     if !eku.is_empty() {
-        let oids = eku.iter().map(|n| x509::eku_oid(n)).collect::<Result<Vec<_>>>()?;
+        let oids = eku
+            .iter()
+            .map(|n| x509::eku_oid(n))
+            .collect::<Result<Vec<_>>>()?;
         exts.push(ExtendedKeyUsage(oids).to_extension(&subject, &exts)?);
     }
     if !exts.is_empty() {

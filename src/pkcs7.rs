@@ -7,9 +7,12 @@ use der::{Decode, Encode};
 use x509_cert::{Certificate, PkiPath};
 
 pub fn read(der: &[u8]) -> Result<Vec<Vec<u8>>> {
-    let info = ContentInfo::from_der(der).map_err(|_| Error::new("The data is not a PKCS#7 document."))?;
+    let info =
+        ContentInfo::from_der(der).map_err(|_| Error::new("The data is not a PKCS#7 document."))?;
     if info.content_type != ID_SIGNED_DATA {
-        return Err(Error::new("The PKCS#7 document is not signed-data and holds no certificates."));
+        return Err(Error::new(
+            "The PKCS#7 document is not signed-data and holds no certificates.",
+        ));
     }
     let signed = SignedData::from_der(&info.content.to_der()?)?;
     let mut out = Vec::new();

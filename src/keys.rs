@@ -13,8 +13,8 @@ use const_oid::{AssociatedOid, ObjectIdentifier};
 use der::asn1::{Any, AnyRef};
 use der::Decode;
 use digest::Digest;
-use p256::elliptic_curve::sec1::ToEncodedPoint;
 use hmac::{Hmac, Mac};
+use p256::elliptic_curve::sec1::ToEncodedPoint;
 use pkcs1::{DecodeRsaPrivateKey, EncodeRsaPrivateKey};
 use pkcs5::pbes2;
 use pkcs8::{EncodePrivateKey, PrivateKeyInfo};
@@ -81,7 +81,9 @@ impl PrivateKey {
                 SECP_384_R_1 => Ok(PrivateKey::P384(p384::SecretKey::try_from(info)?)),
                 _ => Err(unsupported_algorithm()),
             },
-            ID_ED_25519 => Ok(PrivateKey::Ed25519(ed25519_dalek::SigningKey::try_from(info)?)),
+            ID_ED_25519 => Ok(PrivateKey::Ed25519(ed25519_dalek::SigningKey::try_from(
+                info,
+            )?)),
             _ => Err(unsupported_algorithm()),
         }
     }
@@ -229,12 +231,12 @@ impl PrivateKey {
                 &k.private.p,
                 &k.private.q,
             ),
-            KeypairData::Ecdsa(EcdsaKeypair::NistP256 { private, .. }) => {
-                Ok(PrivateKey::P256(p256::SecretKey::from_slice(private.as_slice())?))
-            }
-            KeypairData::Ecdsa(EcdsaKeypair::NistP384 { private, .. }) => {
-                Ok(PrivateKey::P384(p384::SecretKey::from_slice(private.as_slice())?))
-            }
+            KeypairData::Ecdsa(EcdsaKeypair::NistP256 { private, .. }) => Ok(PrivateKey::P256(
+                p256::SecretKey::from_slice(private.as_slice())?,
+            )),
+            KeypairData::Ecdsa(EcdsaKeypair::NistP384 { private, .. }) => Ok(PrivateKey::P384(
+                p384::SecretKey::from_slice(private.as_slice())?,
+            )),
             KeypairData::Ed25519(k) => Ok(PrivateKey::Ed25519(
                 ed25519_dalek::SigningKey::from_bytes(k.private.as_ref()),
             )),
@@ -252,9 +254,9 @@ impl PrivateKey {
                 let one = BigUint::from(1u8);
                 let dp = k.d() % (p - &one);
                 let dq = k.d() % (q - &one);
-                let qi = k
-                    .crt_coefficient()
-                    .ok_or_else(|| Error::new("The RSA key's CRT coefficient could not be computed."))?;
+                let qi = k.crt_coefficient().ok_or_else(|| {
+                    Error::new("The RSA key's CRT coefficient could not be computed.")
+                })?;
                 jwk.d = Some(pem::b64url_encode(&k.d().to_bytes_be()));
                 jwk.p = Some(pem::b64url_encode(&p.to_bytes_be()));
                 jwk.q = Some(pem::b64url_encode(&q.to_bytes_be()));
@@ -294,7 +296,9 @@ impl PublicKey {
                 SECP_384_R_1 => Ok(PublicKey::P384(p384::PublicKey::try_from(spki)?)),
                 _ => Err(unsupported_algorithm()),
             },
-            ID_ED_25519 => Ok(PublicKey::Ed25519(ed25519_dalek::VerifyingKey::try_from(spki)?)),
+            ID_ED_25519 => Ok(PublicKey::Ed25519(ed25519_dalek::VerifyingKey::try_from(
+                spki,
+            )?)),
             _ => Err(unsupported_algorithm()),
         }
     }
@@ -345,7 +349,12 @@ impl PublicKey {
         })
     }
 
-    pub fn verify(&self, signature_oid: ObjectIdentifier, message: &[u8], signature: &[u8]) -> bool {
+    pub fn verify(
+        &self,
+        signature_oid: ObjectIdentifier,
+        message: &[u8],
+        signature: &[u8],
+    ) -> bool {
         match (self, signature_oid) {
             (PublicKey::Rsa(k), SHA_256_WITH_RSA_ENCRYPTION) => {
                 rsa_verify::<Sha256>(k, &Sha256::digest(message), signature)
@@ -379,10 +388,12 @@ impl PublicKey {
                 }
                 None => false,
             },
-            (PublicKey::Ed25519(k), ID_ED_25519) => match ed25519_dalek::Signature::from_slice(signature) {
-                Ok(sig) => k.verify(message, &sig).is_ok(),
-                Err(_) => false,
-            },
+            (PublicKey::Ed25519(k), ID_ED_25519) => {
+                match ed25519_dalek::Signature::from_slice(signature) {
+                    Ok(sig) => k.verify(message, &sig).is_ok(),
+                    Err(_) => false,
+                }
+            }
             _ => false,
         }
     }
@@ -411,14 +422,17 @@ impl PublicKey {
                         .map(BigUint::from_bytes_be)
                         .ok_or_else(|| Error::new("The RSA key holds a negative integer."))
                 };
-                Ok(PublicKey::Rsa(rsa::RsaPublicKey::new(big(&k.n)?, big(&k.e)?)?))
+                Ok(PublicKey::Rsa(rsa::RsaPublicKey::new(
+                    big(&k.n)?,
+                    big(&k.e)?,
+                )?))
             }
-            KeyData::Ecdsa(EcdsaPublicKey::NistP256(p)) => {
-                Ok(PublicKey::P256(p256::PublicKey::from_sec1_bytes(p.as_bytes())?))
-            }
-            KeyData::Ecdsa(EcdsaPublicKey::NistP384(p)) => {
-                Ok(PublicKey::P384(p384::PublicKey::from_sec1_bytes(p.as_bytes())?))
-            }
+            KeyData::Ecdsa(EcdsaPublicKey::NistP256(p)) => Ok(PublicKey::P256(
+                p256::PublicKey::from_sec1_bytes(p.as_bytes())?,
+            )),
+            KeyData::Ecdsa(EcdsaPublicKey::NistP384(p)) => Ok(PublicKey::P384(
+                p384::PublicKey::from_sec1_bytes(p.as_bytes())?,
+            )),
             KeyData::Ed25519(k) => Ok(PublicKey::Ed25519(
                 ed25519_dalek::VerifyingKey::from_bytes(&k.0)
                     .map_err(|_| Error::new("The Ed25519 public key is not a valid point."))?,
@@ -459,7 +473,11 @@ impl PublicKey {
     }
 }
 
-fn rsa_verify<D: Digest + AssociatedOid>(key: &rsa::RsaPublicKey, digest: &[u8], signature: &[u8]) -> bool {
+fn rsa_verify<D: Digest + AssociatedOid>(
+    key: &rsa::RsaPublicKey,
+    digest: &[u8],
+    signature: &[u8],
+) -> bool {
     let vk = rsa::pkcs1v15::VerifyingKey::<D>::new(key.clone());
     match rsa::pkcs1v15::Signature::try_from(signature) {
         Ok(sig) => vk.verify_prehash(digest, &sig).is_ok(),
@@ -489,7 +507,10 @@ pub fn openssh_private_parse(text: &str, password: &str) -> Result<ParsedPrivate
     let parsed = ssh_key::PrivateKey::from_openssh(text)?;
     if parsed.is_encrypted() {
         if password.is_empty() {
-            return Ok(ParsedPrivate { key: None, encrypted: true });
+            return Ok(ParsedPrivate {
+                key: None,
+                encrypted: true,
+            });
         }
         let decrypted = parsed.decrypt(password).map_err(|_| wrong_password())?;
         return Ok(ParsedPrivate {
@@ -533,7 +554,8 @@ fn take_string<'a>(data: &'a [u8], pos: &mut usize) -> Result<&'a [u8]> {
     if *pos + 4 > data.len() {
         return Err(bad());
     }
-    let len = u32::from_be_bytes([data[*pos], data[*pos + 1], data[*pos + 2], data[*pos + 3]]) as usize;
+    let len =
+        u32::from_be_bytes([data[*pos], data[*pos + 1], data[*pos + 2], data[*pos + 3]]) as usize;
     *pos += 4;
     if *pos + len > data.len() {
         return Err(bad());
@@ -587,7 +609,11 @@ fn ppk_v3_derive(
         "Argon2id" => ArgonAlgorithm::Argon2id,
         "Argon2i" => ArgonAlgorithm::Argon2i,
         "Argon2d" => ArgonAlgorithm::Argon2d,
-        _ => return Err(Error::new("The PPK key derivation is not an Argon2 variant.")),
+        _ => {
+            return Err(Error::new(
+                "The PPK key derivation is not an Argon2 variant.",
+            ))
+        }
     };
     let params = ArgonParams::new(memory, passes, parallelism, Some(80))?;
     let argon = Argon2::new(alg, ArgonVersion::V0x13, params);
@@ -637,7 +663,9 @@ fn aes_cbc(key: &[u8; 32], iv: &[u8; 16], buf: &mut [u8], encrypt: bool) -> Resu
 
 pub fn ppk_parse(text: &str, password: &str) -> Result<ParsedPrivate> {
     let mut lines = text.lines();
-    let header = lines.next().ok_or_else(|| Error::new("The PPK file is empty."))?;
+    let header = lines
+        .next()
+        .ok_or_else(|| Error::new("The PPK file is empty."))?;
     let rest = header
         .strip_prefix("PuTTY-User-Key-File-")
         .ok_or_else(|| Error::new("The file does not start with a PuTTY key header."))?;
@@ -661,10 +689,16 @@ pub fn ppk_parse(text: &str, password: &str) -> Result<ParsedPrivate> {
             .split_once(": ")
             .ok_or_else(|| Error::new("A PPK line is not a key-value pair."))?;
         if k.ends_with("-Lines") {
-            let n: usize = v.parse().map_err(|_| Error::new("A PPK line count is not a number."))?;
+            let n: usize = v
+                .parse()
+                .map_err(|_| Error::new("A PPK line count is not a number."))?;
             let mut body = String::new();
             for _ in 0..n {
-                body.push_str(lines.next().ok_or_else(|| Error::new("The PPK file ended early."))?);
+                body.push_str(
+                    lines
+                        .next()
+                        .ok_or_else(|| Error::new("The PPK file ended early."))?,
+                );
             }
             let decoded = pem::b64_decode(&body)?;
             match k {
@@ -677,11 +711,15 @@ pub fn ppk_parse(text: &str, password: &str) -> Result<ParsedPrivate> {
         }
     }
     let get = |name: &str| -> Option<&str> {
-        values.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+        values
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
     };
     let encryption = get("Encryption").unwrap_or("none").to_string();
     let comment = get("Comment").unwrap_or("").to_string();
-    let mac_hex = get("Private-MAC").ok_or_else(|| Error::new("The PPK file has no Private-MAC line."))?;
+    let mac_hex =
+        get("Private-MAC").ok_or_else(|| Error::new("The PPK file has no Private-MAC line."))?;
     let expected_mac = pem::unhex(mac_hex)?;
     let encrypted = match encryption.as_str() {
         "none" => false,
@@ -689,7 +727,10 @@ pub fn ppk_parse(text: &str, password: &str) -> Result<ParsedPrivate> {
         _ => return Err(Error::new("The PPK encryption mode is not supported.")),
     };
     if encrypted && password.is_empty() {
-        return Ok(ParsedPrivate { key: None, encrypted: true });
+        return Ok(ParsedPrivate {
+            key: None,
+            encrypted: true,
+        });
     }
     let derived = if version == 2 {
         ppk_v2_derive(password)
@@ -700,7 +741,9 @@ pub fn ppk_parse(text: &str, password: &str) -> Result<ParsedPrivate> {
                 .parse()
                 .map_err(|_| Error::new("An Argon2 parameter is not a number."))
         };
-        let salt = pem::unhex(get("Argon2-Salt").ok_or_else(|| Error::new("The PPK file has no Argon2 salt."))?)?;
+        let salt = pem::unhex(
+            get("Argon2-Salt").ok_or_else(|| Error::new("The PPK file has no Argon2 salt."))?,
+        )?;
         ppk_v3_derive(
             password,
             get("Key-Derivation").unwrap_or("Argon2id"),
@@ -710,7 +753,11 @@ pub fn ppk_parse(text: &str, password: &str) -> Result<ParsedPrivate> {
             &salt,
         )?
     } else {
-        PpkDerived { key: [0u8; 32], iv: [0u8; 16], mac_key: Vec::new() }
+        PpkDerived {
+            key: [0u8; 32],
+            iv: [0u8; 16],
+            mac_key: Vec::new(),
+        }
     };
     if encrypted {
         if private_blob.len() % 16 != 0 {
@@ -730,7 +777,11 @@ pub fn ppk_parse(text: &str, password: &str) -> Result<ParsedPrivate> {
         ],
     )?;
     if mac != expected_mac {
-        return Err(if encrypted { wrong_password() } else { Error::new("The PPK file's MAC does not match its contents.") });
+        return Err(if encrypted {
+            wrong_password()
+        } else {
+            Error::new("The PPK file's MAC does not match its contents.")
+        });
     }
     let public = ssh_key::PublicKey::from_bytes(&public_blob)?;
     let public_key = PublicKey::from_ssh(public.key_data())?;
@@ -755,12 +806,16 @@ pub fn ppk_parse(text: &str, password: &str) -> Result<ParsedPrivate> {
         }
         PublicKey::P256(_) => {
             let d = Mpint::from_bytes(take_string(&private_blob, &mut pos)?)?;
-            let bytes = d.as_positive_bytes().ok_or_else(|| Error::new("The EC scalar is negative."))?;
+            let bytes = d
+                .as_positive_bytes()
+                .ok_or_else(|| Error::new("The EC scalar is negative."))?;
             PrivateKey::P256(p256::SecretKey::from_slice(bytes)?)
         }
         PublicKey::P384(_) => {
             let d = Mpint::from_bytes(take_string(&private_blob, &mut pos)?)?;
-            let bytes = d.as_positive_bytes().ok_or_else(|| Error::new("The EC scalar is negative."))?;
+            let bytes = d
+                .as_positive_bytes()
+                .ok_or_else(|| Error::new("The EC scalar is negative."))?;
             PrivateKey::P384(p384::SecretKey::from_slice(bytes)?)
         }
         PublicKey::Ed25519(_) => {
@@ -777,7 +832,10 @@ pub fn ppk_parse(text: &str, password: &str) -> Result<ParsedPrivate> {
             PrivateKey::Ed25519(ed25519_dalek::SigningKey::from_bytes(&seed))
         }
     };
-    Ok(ParsedPrivate { key: Some(key), encrypted })
+    Ok(ParsedPrivate {
+        key: Some(key),
+        encrypted,
+    })
 }
 
 fn wrap64(data: &[u8]) -> Vec<String> {
@@ -818,7 +876,11 @@ pub fn ppk_write(key: &PrivateKey, comment: &str, password: &str) -> Result<Stri
         kdf_lines.push(format!("Argon2-Salt: {}", pem::hex(&salt)));
         ppk_v3_derive(password, "Argon2id", 8192, 13, 1, &salt)?
     } else {
-        PpkDerived { key: [0u8; 32], iv: [0u8; 16], mac_key: Vec::new() }
+        PpkDerived {
+            key: [0u8; 32],
+            iv: [0u8; 16],
+            mac_key: Vec::new(),
+        }
     };
     let mac = ppk_mac(
         3,
@@ -892,8 +954,9 @@ pub struct Jwks {
 
 pub fn json_stringify<T: Serialize>(value: &T) -> Result<String> {
     let js = serde_wasm_bindgen::to_value(value)?;
-    let text = js_sys::JSON::stringify_with_replacer_and_space(&js, &JsValue::NULL, &JsValue::from(2))
-        .map_err(|_| Error::new("The JSON document could not be written."))?;
+    let text =
+        js_sys::JSON::stringify_with_replacer_and_space(&js, &JsValue::NULL, &JsValue::from(2))
+            .map_err(|_| Error::new("The JSON document could not be written."))?;
     let mut out: String = text.into();
     out.push('\n');
     Ok(out)
@@ -931,7 +994,9 @@ pub fn jwk_parse(text: &str) -> Result<ParsedJwk> {
                         ],
                         _ => Vec::new(),
                     };
-                    Some(PrivateKey::Rsa(rsa::RsaPrivateKey::from_components(n, e, d, primes)?))
+                    Some(PrivateKey::Rsa(rsa::RsaPrivateKey::from_components(
+                        n, e, d, primes,
+                    )?))
                 }
                 None => None,
             };
@@ -947,7 +1012,9 @@ pub fn jwk_parse(text: &str) -> Result<ParsedJwk> {
                 Some("P-256") => {
                     let public = PublicKey::P256(p256::PublicKey::from_sec1_bytes(&point)?);
                     let private = match &jwk.d {
-                        Some(_) => Some(PrivateKey::P256(p256::SecretKey::from_slice(&field(&jwk.d, "d")?)?)),
+                        Some(_) => Some(PrivateKey::P256(p256::SecretKey::from_slice(&field(
+                            &jwk.d, "d",
+                        )?)?)),
                         None => None,
                     };
                     Ok(ParsedJwk { public, private })
@@ -955,7 +1022,9 @@ pub fn jwk_parse(text: &str) -> Result<ParsedJwk> {
                 Some("P-384") => {
                     let public = PublicKey::P384(p384::PublicKey::from_sec1_bytes(&point)?);
                     let private = match &jwk.d {
-                        Some(_) => Some(PrivateKey::P384(p384::SecretKey::from_slice(&field(&jwk.d, "d")?)?)),
+                        Some(_) => Some(PrivateKey::P384(p384::SecretKey::from_slice(&field(
+                            &jwk.d, "d",
+                        )?)?)),
                         None => None,
                     };
                     Ok(ParsedJwk { public, private })
@@ -983,7 +1052,9 @@ pub fn jwk_parse(text: &str) -> Result<ParsedJwk> {
                         .as_slice()
                         .try_into()
                         .map_err(|_| Error::new("The Ed25519 private key must be 32 bytes."))?;
-                    Some(PrivateKey::Ed25519(ed25519_dalek::SigningKey::from_bytes(&seed)))
+                    Some(PrivateKey::Ed25519(ed25519_dalek::SigningKey::from_bytes(
+                        &seed,
+                    )))
                 }
                 None => None,
             };

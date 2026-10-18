@@ -36,7 +36,9 @@ pub fn split(text: &str) -> Result<Vec<Block>> {
             let name = rest.trim_end_matches('-').trim();
             if let Some(current) = label.take() {
                 if current != name {
-                    return Err(Error::new("A PEM block's BEGIN and END labels do not match."));
+                    return Err(Error::new(
+                        "A PEM block's BEGIN and END labels do not match.",
+                    ));
                 }
                 raw_block.push_str(line);
                 raw_block.push('\n');
@@ -61,7 +63,7 @@ pub fn split(text: &str) -> Result<Vec<Block>> {
                 continue;
             }
             if let Some((k, v)) = line.split_once(':') {
-                if !k.contains(|c: char| c == '=' || c == '/' || c == '+') {
+                if !k.contains(['=', '/', '+']) {
                     headers.push((k.trim().to_string(), v.trim().to_string()));
                     continue;
                 }
@@ -111,8 +113,11 @@ pub fn hex(data: &[u8]) -> String {
 }
 
 pub fn unhex(text: &str) -> Result<Vec<u8>> {
-    let compact: String = text.chars().filter(|c| *c != ':' && !c.is_whitespace()).collect();
-    if compact.len() % 2 != 0 {
+    let compact: String = text
+        .chars()
+        .filter(|c| *c != ':' && !c.is_whitespace())
+        .collect();
+    if !compact.len().is_multiple_of(2) {
         return Err(Error::new("The hex string has an odd length."));
     }
     let mut out = Vec::with_capacity(compact.len() / 2);

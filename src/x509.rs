@@ -6,10 +6,9 @@ use const_oid::db::rfc5280::{
     ID_KP_OCSP_SIGNING, ID_KP_SERVER_AUTH, ID_KP_TIME_STAMPING,
 };
 use const_oid::db::rfc5912::{
-    ECDSA_WITH_SHA_224, ECDSA_WITH_SHA_256, ECDSA_WITH_SHA_384, ECDSA_WITH_SHA_512,
-    ID_RSASSA_PSS, MD_5_WITH_RSA_ENCRYPTION, SHA_1_WITH_RSA_ENCRYPTION,
-    SHA_224_WITH_RSA_ENCRYPTION, SHA_256_WITH_RSA_ENCRYPTION, SHA_384_WITH_RSA_ENCRYPTION,
-    SHA_512_WITH_RSA_ENCRYPTION,
+    ECDSA_WITH_SHA_224, ECDSA_WITH_SHA_256, ECDSA_WITH_SHA_384, ECDSA_WITH_SHA_512, ID_RSASSA_PSS,
+    MD_5_WITH_RSA_ENCRYPTION, SHA_1_WITH_RSA_ENCRYPTION, SHA_224_WITH_RSA_ENCRYPTION,
+    SHA_256_WITH_RSA_ENCRYPTION, SHA_384_WITH_RSA_ENCRYPTION, SHA_512_WITH_RSA_ENCRYPTION,
 };
 use const_oid::db::rfc8410::ID_ED_25519;
 use const_oid::db::DB;
@@ -55,7 +54,10 @@ impl<'de> Visitor<'de> for NameMapVisitor {
         f.write_str("an object of short names to strings")
     }
 
-    fn visit_map<A: MapAccess<'de>>(self, mut access: A) -> core::result::Result<NameMap, A::Error> {
+    fn visit_map<A: MapAccess<'de>>(
+        self,
+        mut access: A,
+    ) -> core::result::Result<NameMap, A::Error> {
         let mut out = Vec::new();
         while let Some((k, v)) = access.next_entry::<String, String>()? {
             out.push((k, v));
@@ -109,9 +111,11 @@ pub fn parse(der: &[u8]) -> Result<Certificate> {
 
 pub fn attribute_value_string(value: &Any) -> String {
     match value.tag() {
-        Tag::Utf8String | Tag::PrintableString | Tag::Ia5String | Tag::TeletexString | Tag::VisibleString => {
-            String::from_utf8_lossy(value.value()).to_string()
-        }
+        Tag::Utf8String
+        | Tag::PrintableString
+        | Tag::Ia5String
+        | Tag::TeletexString
+        | Tag::VisibleString => String::from_utf8_lossy(value.value()).to_string(),
         Tag::BmpString => {
             let units: Vec<u16> = value
                 .value()
@@ -164,8 +168,12 @@ pub fn name_from_map(map: &NameMap) -> Result<Name> {
     for (key, value) in &map.0 {
         let oid = match DB.by_name(key) {
             Some(oid) => *oid,
-            None => ObjectIdentifier::new(key)
-                .map_err(|_| Error::new(format!("The subject attribute {} is not a known name or an OID.", key)))?,
+            None => ObjectIdentifier::new(key).map_err(|_| {
+                Error::new(format!(
+                    "The subject attribute {} is not a known name or an OID.",
+                    key
+                ))
+            })?,
         };
         let upper = key.to_ascii_uppercase();
         let printable = value
@@ -215,9 +223,18 @@ pub fn signature_name(oid: &ObjectIdentifier) -> String {
 
 pub fn general_name_to_san(name: &GeneralName) -> Option<San> {
     match name {
-        GeneralName::DnsName(s) => Some(San { kind: "dns".into(), value: s.to_string() }),
-        GeneralName::Rfc822Name(s) => Some(San { kind: "email".into(), value: s.to_string() }),
-        GeneralName::UniformResourceIdentifier(s) => Some(San { kind: "uri".into(), value: s.to_string() }),
+        GeneralName::DnsName(s) => Some(San {
+            kind: "dns".into(),
+            value: s.to_string(),
+        }),
+        GeneralName::Rfc822Name(s) => Some(San {
+            kind: "email".into(),
+            value: s.to_string(),
+        }),
+        GeneralName::UniformResourceIdentifier(s) => Some(San {
+            kind: "uri".into(),
+            value: s.to_string(),
+        }),
         GeneralName::IpAddress(bytes) => {
             let b = bytes.as_bytes();
             let value = match b.len() {
@@ -229,14 +246,19 @@ pub fn general_name_to_san(name: &GeneralName) -> Option<San> {
                 }
                 _ => pem::hex(b),
             };
-            Some(San { kind: "ip".into(), value })
+            Some(San {
+                kind: "ip".into(),
+                value,
+            })
         }
         _ => None,
     }
 }
 
 pub fn san_to_general_name(san: &San) -> Result<GeneralName> {
-    let ia5 = |v: &str| Ia5String::new(v).map_err(|_| Error::new(format!("The name {} is not ASCII.", v)));
+    let ia5 = |v: &str| {
+        Ia5String::new(v).map_err(|_| Error::new(format!("The name {} is not ASCII.", v)))
+    };
     match san.kind.as_str() {
         "dns" => Ok(GeneralName::DnsName(ia5(&san.value)?)),
         "email" => Ok(GeneralName::Rfc822Name(ia5(&san.value)?)),
@@ -252,7 +274,10 @@ pub fn san_to_general_name(san: &San) -> Result<GeneralName> {
             };
             Ok(GeneralName::IpAddress(OctetString::new(bytes)?))
         }
-        other => Err(Error::new(format!("The subject alternative name kind {} is not supported in X.509.", other))),
+        other => Err(Error::new(format!(
+            "The subject alternative name kind {} is not supported in X.509.",
+            other
+        ))),
     }
 }
 
@@ -297,8 +322,12 @@ pub fn eku_oid(name: &str) -> Result<ObjectIdentifier> {
         "timeStamping" => Ok(ID_KP_TIME_STAMPING),
         "OCSPSigning" => Ok(ID_KP_OCSP_SIGNING),
         "anyExtendedKeyUsage" => Ok(ANY_EXTENDED_KEY_USAGE),
-        other => ObjectIdentifier::new(other)
-            .map_err(|_| Error::new(format!("The extended key usage {} is not a known name or an OID.", other))),
+        other => ObjectIdentifier::new(other).map_err(|_| {
+            Error::new(format!(
+                "The extended key usage {} is not a known name or an OID.",
+                other
+            ))
+        }),
     }
 }
 
@@ -329,7 +358,11 @@ pub fn verify_with_key(cert: &Certificate, issuer_key: &PublicKey) -> bool {
         Ok(t) => t,
         Err(_) => return false,
     };
-    issuer_key.verify(cert.signature_algorithm.oid, &tbs, cert.signature.raw_bytes())
+    issuer_key.verify(
+        cert.signature_algorithm.oid,
+        &tbs,
+        cert.signature.raw_bytes(),
+    )
 }
 
 pub fn names_equal(a: &Name, b: &Name) -> bool {
@@ -478,14 +511,19 @@ pub fn build_chain(ders: &[Vec<u8>]) -> Result<Chain> {
     let mut issuer_candidates: Vec<Vec<usize>> = vec![Vec::new(); n];
     for i in 0..n {
         for j in 0..n {
-            if i != j && names_equal(&certs[i].tbs_certificate.issuer, &certs[j].tbs_certificate.subject) {
+            if i != j
+                && names_equal(
+                    &certs[i].tbs_certificate.issuer,
+                    &certs[j].tbs_certificate.subject,
+                )
+            {
                 issuer_candidates[i].push(j);
             }
         }
     }
     let mut issues_something = vec![false; n];
-    for i in 0..n {
-        for &j in &issuer_candidates[i] {
+    for candidates in &issuer_candidates {
+        for &j in candidates {
             issues_something[j] = true;
         }
     }
@@ -505,12 +543,19 @@ pub fn build_chain(ders: &[Vec<u8>]) -> Result<Chain> {
             visited.insert(current);
             order.push(current);
             if is_self_signed(&certs[current]) {
-                hops.push(Hop { from: current, to: None, status: "self_signed".into() });
+                hops.push(Hop {
+                    from: current,
+                    to: None,
+                    status: "self_signed".into(),
+                });
                 break;
             }
             let mut next: Option<(usize, bool)> = None;
             for &j in &issuer_candidates[current] {
-                let ok = keys[j].as_ref().map(|k| verify_with_key(&certs[current], k)).unwrap_or(false);
+                let ok = keys[j]
+                    .as_ref()
+                    .map(|k| verify_with_key(&certs[current], k))
+                    .unwrap_or(false);
                 if ok {
                     next = Some((j, true));
                     break;
@@ -521,14 +566,22 @@ pub fn build_chain(ders: &[Vec<u8>]) -> Result<Chain> {
             }
             match next {
                 None => {
-                    hops.push(Hop { from: current, to: None, status: "missing_issuer".into() });
+                    hops.push(Hop {
+                        from: current,
+                        to: None,
+                        status: "missing_issuer".into(),
+                    });
                     break;
                 }
                 Some((j, valid)) => {
                     hops.push(Hop {
                         from: current,
                         to: Some(j),
-                        status: if valid { "valid".into() } else { "invalid".into() },
+                        status: if valid {
+                            "valid".into()
+                        } else {
+                            "invalid".into()
+                        },
                     });
                     if visited.contains(&j) {
                         break;
@@ -555,7 +608,10 @@ pub struct Compared {
 pub fn compare(a_der: &[u8], b_der: &[u8]) -> Result<Vec<Compared>> {
     let a = facts(a_der)?;
     let b = facts(b_der)?;
-    let same = |f: &str, s: bool| Compared { field: f.to_string(), same: s };
+    let same = |f: &str, s: bool| Compared {
+        field: f.to_string(),
+        same: s,
+    };
     Ok(vec![
         same("subject", a.subject_dn == b.subject_dn),
         same("issuer", a.issuer_dn == b.issuer_dn),
@@ -565,7 +621,10 @@ pub fn compare(a_der: &[u8], b_der: &[u8]) -> Result<Vec<Compared>> {
         same("algorithm", a.algorithm == b.algorithm),
         same("bits", a.bits == b.bits),
         same("sans", a.sans == b.sans),
-        same("fingerprint_sha256", a.fingerprint_sha256 == b.fingerprint_sha256),
+        same(
+            "fingerprint_sha256",
+            a.fingerprint_sha256 == b.fingerprint_sha256,
+        ),
     ])
 }
 
@@ -597,10 +656,13 @@ pub fn ssh_certificate_facts(cert: &ssh_key::Certificate, raw: &[u8]) -> Result<
         sans: cert
             .valid_principals()
             .iter()
-            .map(|p| San { kind: "principal".into(), value: p.clone() })
+            .map(|p| San {
+                kind: "principal".into(),
+                value: p.clone(),
+            })
             .collect(),
         key_usage: Vec::new(),
-        ext_key_usage: cert.extensions().iter().map(|(k, _)| k.clone()).collect(),
+        ext_key_usage: cert.extensions().keys().cloned().collect(),
         fingerprint_sha256: fp.sha256,
         fingerprint_sha1: fp.sha1,
         fingerprint_md5: fp.md5,

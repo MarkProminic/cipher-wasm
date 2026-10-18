@@ -33,8 +33,9 @@ pub struct Issue<'a> {
 }
 
 fn time_from_secs(secs: u64) -> Result<Time> {
-    let dt = DateTime::from_unix_duration(core::time::Duration::from_secs(secs))
-        .map_err(|_| Error::new("The validity period falls outside the dates a certificate can hold."))?;
+    let dt = DateTime::from_unix_duration(core::time::Duration::from_secs(secs)).map_err(|_| {
+        Error::new("The validity period falls outside the dates a certificate can hold.")
+    })?;
     if dt.year() <= UtcTime::MAX_YEAR {
         Ok(Time::UtcTime(UtcTime::from_date_time(dt)?))
     } else {
@@ -76,7 +77,10 @@ pub fn issue(p: Issue<'_>) -> Result<Vec<u8>> {
     let subject_spki = SubjectPublicKeyInfoOwned::from_der(&p.subject_key.to_spki_der()?)?;
     let issuer_spki = SubjectPublicKeyInfoOwned::from_der(&p.issuer_key.to_spki_der()?)?;
     let mut exts: Vec<Extension> = Vec::new();
-    exts.push(SubjectKeyIdentifier(OctetString::new(key_identifier(&subject_spki))?).to_extension(&p.subject, &exts)?);
+    exts.push(
+        SubjectKeyIdentifier(OctetString::new(key_identifier(&subject_spki))?)
+            .to_extension(&p.subject, &exts)?,
+    );
     exts.push(
         AuthorityKeyIdentifier {
             key_identifier: Some(OctetString::new(key_identifier(&issuer_spki))?),
@@ -102,11 +106,19 @@ pub fn issue(p: Issue<'_>) -> Result<Vec<u8>> {
     };
     exts.push(KeyUsage(usage).to_extension(&p.subject, &exts)?);
     if !p.sans.is_empty() {
-        let names = p.sans.iter().map(x509::san_to_general_name).collect::<Result<Vec<_>>>()?;
+        let names = p
+            .sans
+            .iter()
+            .map(x509::san_to_general_name)
+            .collect::<Result<Vec<_>>>()?;
         exts.push(SubjectAltName(names).to_extension(&p.subject, &exts)?);
     }
     if !p.eku.is_empty() {
-        let oids = p.eku.iter().map(|n| x509::eku_oid(n)).collect::<Result<Vec<_>>>()?;
+        let oids = p
+            .eku
+            .iter()
+            .map(|n| x509::eku_oid(n))
+            .collect::<Result<Vec<_>>>()?;
         exts.push(ExtendedKeyUsage(oids).to_extension(&p.subject, &exts)?);
     }
     let reserved = [
@@ -182,7 +194,9 @@ pub fn sign_csr(
 ) -> Result<Vec<u8>> {
     let req = csr::parse(csr_der)?;
     if !csr::verify(&req) {
-        return Err(Error::new("The certificate request's signature is not valid."));
+        return Err(Error::new(
+            "The certificate request's signature is not valid.",
+        ));
     }
     let ca_cert = x509::parse(ca_cert_der)?;
     let ca_key = PrivateKey::from_pkcs8_der(ca_key_der)?;
@@ -193,7 +207,11 @@ pub fn sign_csr(
     let subject_key = csr::public_key_of(&req)?;
     let (sans, eku, extra) = if copy_extensions {
         let exts = csr::extensions(&req);
-        (x509::extension_sans(&exts), x509::extension_eku(&exts), exts)
+        (
+            x509::extension_sans(&exts),
+            x509::extension_eku(&exts),
+            exts,
+        )
     } else {
         (Vec::new(), Vec::new(), Vec::new())
     };

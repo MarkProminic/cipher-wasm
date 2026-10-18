@@ -1,0 +1,104 @@
+name: Release Please
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+  security-events: write
+  packages: read
+
+# Every feature push to main runs the full suite here before release-please
+# refreshes its PR. The merge of that PR is a push to main too, but its code
+# is the main that just passed plus the changelog, the version and the
+# manifest, so the suite skips on the release merge commit and release-please
+# runs on a passed or a skipped CI alike.
+jobs:
+  ci-checks:
+    name: CI Checks
+    if: "${{ !startsWith(github.event.head_commit.message, 'chore(main): release') }}"
+    uses: ./.github/workflows/ci.yml
+
+  release-please:
+    name: Release Please
+    needs: ci-checks
+    if: ${{ !cancelled() && (needs.ci-checks.result == 'success' || needs.ci-checks.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      major: ${{ steps.release.outputs.major }}
+      minor: ${{ steps.release.outputs.minor }}
+      patch: ${{ steps.release.outputs.patch }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Mint App token
+        id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+
+      - name: Release Please
+        uses: googleapis/release-please-action@v5
+        id: release
+        with:
+          token: ${{ steps.app.outputs.token }}
+
+  build-artifact:
+    name: Build Package Artifact
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    uses: ./.github/workflows/prod-build.yml
+    with:
+      version: ${{ needs.release-please.outputs.major }}.${{ needs.release-please.outputs.minor }}.${{ needs.release-please.outputs.patch }}
+      tag_name: ${{ needs.release-please.outputs.tag_name }}
+
+  notify-consumers:
+    name: Notify consumers
+    needs: [release-please, build-artifact]
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        consumer:
+          - STARTcloud/startcloud-ui
+    steps:
+      - name: Split owner and repo
+        id: target
+        env:
+          CONSUMER: ${{ matrix.consumer }}
+        run: |
+          echo "owner=${CONSUMER%%/*}" >> "$GITHUB_OUTPUT"
+          echo "repo=${CONSUMER##*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Mint App token
+        id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.repo }}
+
+      - name: Dispatch dependency-update
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+          CONSUMER: ${{ matrix.consumer }}
+        run: |
+          SHA="$(gh api "repos/${{ github.repository }}/commits/$TAG" --jq .sha)"
+          gh api "repos/$CONSUMER/dispatches" \
+            -f event_type=dependency-update \
+            -f "client_payload[repo]=${{ github.repository }}" \
+            -f "client_payload[tag]=$TAG" \
+            -f "client_payload[sha]=$SHA"
+          echo "Dispatched dependency-update: $CONSUMER <- $TAG"

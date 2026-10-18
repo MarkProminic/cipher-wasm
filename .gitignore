@@ -1,2 +1,5 @@
 target/
 pkg/node_modules
+pkg/.gitignore
+.claude/
+notifications.md

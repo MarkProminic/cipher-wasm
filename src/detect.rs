@@ -191,10 +191,16 @@ fn detect_pem(text: &str, password: &str) -> Result<Detected> {
         }
     }
     if components.is_empty() && !needs_password {
-        return Err(Error::new("The PEM text holds no block this engine understands."));
+        return Err(Error::new(
+            "The PEM text holds no block this engine understands.",
+        ));
     }
     Ok(Detected {
-        format: if all_openssh { "openssh".to_string() } else { "pem".to_string() },
+        format: if all_openssh {
+            "openssh".to_string()
+        } else {
+            "pem".to_string()
+        },
         encrypted,
         needs_password,
         components,
@@ -222,7 +228,10 @@ fn detect_der(bytes: &[u8], password: &str) -> Result<Detected> {
         });
     }
     if let Ok(certs) = pkcs7::read(bytes) {
-        let components = certs.iter().map(|d| cert_component(d)).collect::<Result<Vec<_>>>()?;
+        let components = certs
+            .iter()
+            .map(|d| cert_component(d))
+            .collect::<Result<Vec<_>>>()?;
         return Ok(Detected {
             format: "pkcs7".to_string(),
             encrypted: false,
@@ -411,7 +420,9 @@ fn ordered_certs(certs: &[Vec<u8>]) -> Result<Vec<Vec<u8>>> {
 }
 
 fn need_key(g: &Gathered) -> Result<&PrivateKey> {
-    g.key.as_ref().ok_or_else(|| Error::new("This conversion needs a private key component."))
+    g.key
+        .as_ref()
+        .ok_or_else(|| Error::new("This conversion needs a private key component."))
 }
 
 fn public_of(g: &Gathered) -> Result<PublicKey> {
@@ -419,7 +430,7 @@ fn public_of(g: &Gathered) -> Result<PublicKey> {
         return Ok(k.public_key());
     }
     if let Some(p) = &g.public {
-        return Ok(PublicKey::from_spki_der(&p.to_spki_der()?)?);
+        return PublicKey::from_spki_der(&p.to_spki_der()?);
     }
     if let Some(c) = g.certs.first() {
         return x509::public_key_of(&x509::parse(c)?);
@@ -427,7 +438,9 @@ fn public_of(g: &Gathered) -> Result<PublicKey> {
     if let Some(c) = g.csrs.first() {
         return csr::public_key_of(&csr::parse(c)?);
     }
-    Err(Error::new("This conversion needs a key, a public key or a certificate component."))
+    Err(Error::new(
+        "This conversion needs a key, a public key or a certificate component.",
+    ))
 }
 
 fn text(body: String, mime: &str, extension: &str) -> Converted {
@@ -461,9 +474,18 @@ pub fn convert(input: &ConvertInput) -> Result<Converted> {
                     "encrypted_key" => "ENCRYPTED PRIVATE KEY",
                     "public_key" => "PUBLIC KEY",
                     "csr" => "CERTIFICATE REQUEST",
-                    other => return Err(Error::new(format!("The component kind {} has no PEM form.", other))),
+                    other => {
+                        return Err(Error::new(format!(
+                            "The component kind {} has no PEM form.",
+                            other
+                        )))
+                    }
                 };
-                let der = if label == "PRIVATE KEY" { PrivateKey::from_any_der(&der)?.to_pkcs8_der()? } else { der };
+                let der = if label == "PRIVATE KEY" {
+                    PrivateKey::from_any_der(&der)?.to_pkcs8_der()?
+                } else {
+                    der
+                };
                 out.push_str(&pem::join(label, &der)?);
             }
             Ok(text(out, PEM_MIME, "pem"))
@@ -474,7 +496,11 @@ pub fn convert(input: &ConvertInput) -> Result<Converted> {
                 .first()
                 .ok_or_else(|| Error::new("The DER conversion needs one component."))?;
             let der = pem::b64_decode(&first.der_b64)?;
-            let der = if first.kind == "key" { PrivateKey::from_any_der(&der)?.to_pkcs8_der()? } else { der };
+            let der = if first.kind == "key" {
+                PrivateKey::from_any_der(&der)?.to_pkcs8_der()?
+            } else {
+                der
+            };
             Ok(binary(der, "application/octet-stream", "der"))
         }
         "pkcs8" => {
@@ -486,7 +512,11 @@ pub fn convert(input: &ConvertInput) -> Result<Converted> {
                 return Err(Error::new("An encrypted PKCS#8 key needs a password."));
             }
             let der = need_key(&g)?.to_encrypted_pkcs8_der(&input.password)?;
-            Ok(text(pem::join("ENCRYPTED PRIVATE KEY", &der)?, PEM_MIME, "key"))
+            Ok(text(
+                pem::join("ENCRYPTED PRIVATE KEY", &der)?,
+                PEM_MIME,
+                "key",
+            ))
         }
         "pkcs1" => {
             let (label, der) = need_key(&g)?.to_pkcs1_der()?;
@@ -494,18 +524,27 @@ pub fn convert(input: &ConvertInput) -> Result<Converted> {
         }
         "pkcs12" => {
             let certs = ordered_certs(&g.certs)?;
-            let der = pkcs12::write(&certs, g.key.as_ref(), &input.password, input.legacy, &input.friendly_name)?;
+            let der = pkcs12::write(
+                &certs,
+                g.key.as_ref(),
+                &input.password,
+                input.legacy,
+                &input.friendly_name,
+            )?;
             Ok(binary(der, "application/x-pkcs12", "pfx"))
         }
         "pkcs7" => {
             if g.certs.is_empty() {
-                return Err(Error::new("A PKCS#7 bundle needs at least one certificate."));
+                return Err(Error::new(
+                    "A PKCS#7 bundle needs at least one certificate.",
+                ));
             }
             let der = pkcs7::write(&ordered_certs(&g.certs)?)?;
             Ok(binary(der, "application/x-pkcs7-certificates", "p7b"))
         }
         "openssh" => {
-            let body = keys::openssh_private_write(need_key(&g)?, &input.friendly_name, &input.password)?;
+            let body =
+                keys::openssh_private_write(need_key(&g)?, &input.friendly_name, &input.password)?;
             Ok(text(body, "text/plain", "key"))
         }
         "openssh_public" => {
@@ -521,11 +560,21 @@ pub fn convert(input: &ConvertInput) -> Result<Converted> {
                 Some(k) => k.to_jwk()?,
                 None => public_of(&g)?.to_jwk()?,
             };
-            Ok(text(keys::json_stringify(&jwk)?, "application/json", "json"))
+            Ok(text(
+                keys::json_stringify(&jwk)?,
+                "application/json",
+                "json",
+            ))
         }
         "jwks_public" => {
-            let set = Jwks { keys: vec![public_of(&g)?.to_jwk()?] };
-            Ok(text(keys::json_stringify(&set)?, "application/json", "json"))
+            let set = Jwks {
+                keys: vec![public_of(&g)?.to_jwk()?],
+            };
+            Ok(text(
+                keys::json_stringify(&set)?,
+                "application/json",
+                "json",
+            ))
         }
         "fullchain" => {
             if g.certs.is_empty() {
@@ -545,7 +594,10 @@ pub fn convert(input: &ConvertInput) -> Result<Converted> {
             }
             Ok(text(out, PEM_MIME, "pem"))
         }
-        other => Err(Error::new(format!("The target format {} is not one this engine writes.", other))),
+        other => Err(Error::new(format!(
+            "The target format {} is not one this engine writes.",
+            other
+        ))),
     }
 }
 
@@ -555,7 +607,12 @@ pub fn public_key_hash(der: &[u8], kind: &str) -> Result<String> {
         "key" => PrivateKey::from_any_der(der)?.public_key().to_spki_der()?,
         "csr" => csr::public_key_of(&csr::parse(der)?)?.to_spki_der()?,
         "public_key" => PublicKey::from_spki_der(der)?.to_spki_der()?,
-        other => return Err(Error::new(format!("The kind {} has no public key to hash.", other))),
+        other => {
+            return Err(Error::new(format!(
+                "The kind {} has no public key to hash.",
+                other
+            )))
+        }
     };
     Ok(keys::spki_sha256_hex(&spki))
 }

@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  workflow_call:
+  pull_request:
+    branches: ['main']
+
+permissions:
+  contents: read
+  security-events: write
+  packages: read
+  actions: read
+
+# The release-please PR changes only CHANGELOG.md, package.json and the
+# manifest; every line of code in it reached main through a push that this
+# workflow already tested whole, so the PR's own run proves nothing new and
+# its jobs skip on a release-please branch. A dependabot PR, or any other,
+# still runs the full suite.
+jobs:
+  lint-and-format:
+    name: Lint & Format
+    if: ${{ !startsWith(github.head_ref, 'release-please--') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check rustfmt formatting
+        run: cargo fmt --all --check
+
+      - name: Run Clippy
+        run: cargo clippy --target wasm32-unknown-unknown --all-targets -- -D warnings
+
+  tests:
+    name: Tests
+    if: ${{ !startsWith(github.head_ref, 'release-please--') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Unit tests
+        run: cargo test --release
+
+  build:
+    name: Build
+    if: ${{ !startsWith(github.head_ref, 'release-please--') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-pack
+        uses: taiki-e/install-action@wasm-pack
+
+      - name: Build
+        run: wasm-pack build --target web --release --out-dir pkg --out-name cipher_wasm --scope startcloud
+
+  codeql-analysis:
+    name: CodeQL
+    needs: [lint-and-format, tests, build]
+    uses: ./.github/workflows/codeql.yml

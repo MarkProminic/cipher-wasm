@@ -42,7 +42,10 @@ pub fn public_key_hash(der_b64: &str, kind: &str) -> core::result::Result<String
 }
 
 #[wasm_bindgen]
-pub fn verify_signature(child_der_b64: &str, issuer_der_b64: &str) -> core::result::Result<bool, JsError> {
+pub fn verify_signature(
+    child_der_b64: &str,
+    issuer_der_b64: &str,
+) -> core::result::Result<bool, JsError> {
     let child = pem::b64_decode(child_der_b64)?;
     let issuer = pem::b64_decode(issuer_der_b64)?;
     Ok(x509::verify_signature(&child, &issuer)?)
