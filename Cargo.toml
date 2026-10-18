@@ -35,7 +35,7 @@ des = "0.8"
 rc2 = "0.8"
 cbc = { version = "0.1", features = ["alloc", "block-padding"] }
 cipher = { version = "0.4", features = ["alloc", "block-padding"] }
-digest = { version = "0.10", features = ["alloc"] }
+digest = { version = "0.11", features = ["alloc"] }
 const-oid = { version = "0.9", features = ["db"] }
 base64ct = { version = "1", features = ["alloc"] }
 pem-rfc7468 = { version = "0.7", features = ["alloc"] }
