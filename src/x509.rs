@@ -13,7 +13,7 @@ use const_oid::db::rfc5912::{
 use const_oid::db::rfc8410::ID_ED_25519;
 use const_oid::db::DB;
 use const_oid::{AssociatedOid, ObjectIdentifier};
-use der::asn1::{Any, Ia5String, OctetString, SetOfVec};
+use der::asn1::{Any, Ia5String, OctetString};
 use der::{DateTime, Decode, Encode, Tag, Tagged};
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeMap;
@@ -143,8 +143,8 @@ pub fn short_name(oid: &ObjectIdentifier) -> String {
 
 pub fn name_map(name: &Name) -> NameMap {
     let mut out: Vec<(String, String)> = Vec::new();
-    for rdn in name.0.iter() {
-        for atv in rdn.0.iter() {
+    for rdn in name.iter_rdn() {
+        for atv in rdn.iter() {
             let key = short_name(&atv.oid);
             let value = attribute_value_string(&atv.value);
             match out.iter_mut().find(|(k, _)| *k == key) {
@@ -164,7 +164,7 @@ pub fn name_string(name: &Name) -> String {
 }
 
 pub fn name_from_map(map: &NameMap) -> Result<Name> {
-    let mut rdns = Vec::new();
+    let mut rdns = RdnSequence::default();
     for (key, value) in &map.0 {
         let oid = match DB.by_name(key) {
             Some(oid) => *oid,
@@ -190,9 +190,9 @@ pub fn name_from_map(map: &NameMap) -> Result<Name> {
             oid,
             value: Any::new(tag, value.as_bytes())?,
         };
-        rdns.push(RelativeDistinguishedName(SetOfVec::try_from(vec![atv])?));
+        rdns.push(RelativeDistinguishedName::try_from(vec![atv])?);
     }
-    Ok(RdnSequence(rdns))
+    Ok(Name::from_der(&rdns.to_der()?)?)
 }
 
 pub fn time_string(time: &Time) -> String {
@@ -346,7 +346,7 @@ pub fn fingerprints(der: &[u8]) -> Fingerprints {
 }
 
 pub fn spki_der(cert: &Certificate) -> Result<Vec<u8>> {
-    Ok(cert.tbs_certificate.subject_public_key_info.to_der()?)
+    Ok(cert.tbs_certificate().subject_public_key_info().to_der()?)
 }
 
 pub fn public_key_of(cert: &Certificate) -> Result<PublicKey> {
@@ -354,14 +354,14 @@ pub fn public_key_of(cert: &Certificate) -> Result<PublicKey> {
 }
 
 pub fn verify_with_key(cert: &Certificate, issuer_key: &PublicKey) -> bool {
-    let tbs = match cert.tbs_certificate.to_der() {
+    let tbs = match cert.tbs_certificate().to_der() {
         Ok(t) => t,
         Err(_) => return false,
     };
     issuer_key.verify(
-        cert.signature_algorithm.oid,
+        cert.signature_algorithm().oid,
         &tbs,
-        cert.signature.raw_bytes(),
+        cert.signature().raw_bytes(),
     )
 }
 
@@ -373,7 +373,10 @@ pub fn names_equal(a: &Name, b: &Name) -> bool {
 }
 
 pub fn is_self_signed(cert: &Certificate) -> bool {
-    if !names_equal(&cert.tbs_certificate.subject, &cert.tbs_certificate.issuer) {
+    if !names_equal(
+        cert.tbs_certificate().subject(),
+        cert.tbs_certificate().issuer(),
+    ) {
         return false;
     }
     match public_key_of(cert) {
@@ -449,23 +452,23 @@ pub fn extension_aki(exts: &[Extension]) -> Option<String> {
 
 pub fn facts(der: &[u8]) -> Result<Facts> {
     let cert = parse(der)?;
-    let tbs = &cert.tbs_certificate;
+    let tbs = cert.tbs_certificate();
     let key = public_key_of(&cert)?;
-    let exts: &[Extension] = tbs.extensions.as_deref().unwrap_or(&[]);
+    let exts: &[Extension] = tbs.extensions().map(|e| e.as_slice()).unwrap_or(&[]);
     let (is_ca, path_len) = extension_basic_constraints(exts);
     let fp = fingerprints(der);
     Ok(Facts {
-        subject: name_map(&tbs.subject),
-        issuer: name_map(&tbs.issuer),
-        subject_dn: name_string(&tbs.subject),
-        issuer_dn: name_string(&tbs.issuer),
-        serial_hex: pem::hex(tbs.serial_number.as_bytes()),
-        not_before: time_string(&tbs.validity.not_before),
-        not_after: time_string(&tbs.validity.not_after),
+        subject: name_map(tbs.subject()),
+        issuer: name_map(tbs.issuer()),
+        subject_dn: name_string(tbs.subject()),
+        issuer_dn: name_string(tbs.issuer()),
+        serial_hex: pem::hex(tbs.serial_number().as_bytes()),
+        not_before: time_string(&tbs.validity().not_before),
+        not_after: time_string(&tbs.validity().not_after),
         algorithm: key.algorithm_name().to_string(),
         bits: key.bits(),
         curve: key.curve(),
-        signature_algorithm: signature_name(&cert.signature_algorithm.oid),
+        signature_algorithm: signature_name(&cert.signature_algorithm().oid),
         self_signed: is_self_signed(&cert),
         is_ca,
         path_len,
@@ -513,8 +516,8 @@ pub fn build_chain(ders: &[Vec<u8>]) -> Result<Chain> {
         for j in 0..n {
             if i != j
                 && names_equal(
-                    &certs[i].tbs_certificate.issuer,
-                    &certs[j].tbs_certificate.subject,
+                    certs[i].tbs_certificate().issuer(),
+                    certs[j].tbs_certificate().subject(),
                 )
             {
                 issuer_candidates[i].push(j);

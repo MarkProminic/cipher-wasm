@@ -2,7 +2,7 @@ use crate::error::{Error, Result};
 use crate::pem;
 use argon2::{Algorithm as ArgonAlgorithm, Argon2, Params as ArgonParams, Version as ArgonVersion};
 use cipher::block_padding::NoPadding;
-use cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit};
 use const_oid::db::rfc5912::{
     ECDSA_WITH_SHA_256, ECDSA_WITH_SHA_384, ECDSA_WITH_SHA_512, ID_EC_PUBLIC_KEY, RSA_ENCRYPTION,
     SECP_256_R_1, SECP_384_R_1, SHA_1_WITH_RSA_ENCRYPTION, SHA_256_WITH_RSA_ENCRYPTION,
@@ -10,17 +10,19 @@ use const_oid::db::rfc5912::{
 };
 use const_oid::db::rfc8410::ID_ED_25519;
 use const_oid::{AssociatedOid, ObjectIdentifier};
-use der::asn1::{Any, AnyRef};
+use crypto_bigint::{BoxedUint, NonZero};
+use der::asn1::Any;
 use der::Decode;
 use digest::Digest;
-use hmac::{Hmac, Mac};
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use getrandom::SysRng;
+use hmac::{Hmac, KeyInit, Mac};
+use p256::elliptic_curve::sec1::ToSec1Point;
+use p256::elliptic_curve::Generate;
 use pkcs1::{DecodeRsaPrivateKey, EncodeRsaPrivateKey};
 use pkcs5::pbes2;
-use pkcs8::{EncodePrivateKey, PrivateKeyInfo};
-use rand_core::{OsRng, RngCore};
+use pkcs8::{EncodePrivateKey, PrivateKeyInfoRef};
+use rand_core::UnwrapErr;
 use rsa::traits::{PrivateKeyParts, PublicKeyParts};
-use rsa::BigUint;
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use sha2::{Sha256, Sha384, Sha512};
@@ -61,19 +63,40 @@ fn unsupported_algorithm() -> Error {
     Error::new("The key algorithm is not supported; only RSA, P-256, P-384 and Ed25519 are.")
 }
 
-pub fn random_bytes(len: usize) -> Vec<u8> {
+fn rng() -> UnwrapErr<SysRng> {
+    UnwrapErr(SysRng)
+}
+
+pub fn random_bytes(len: usize) -> Result<Vec<u8>> {
     let mut out = vec![0u8; len];
-    OsRng.fill_bytes(&mut out);
-    out
+    getrandom::fill(&mut out)?;
+    Ok(out)
 }
 
 pub fn spki_sha256_hex(spki_der: &[u8]) -> String {
     pem::hex(&Sha256::digest(spki_der))
 }
 
+fn big(bytes: &[u8]) -> BoxedUint {
+    BoxedUint::from_be_slice_vartime(bytes)
+}
+
+fn big_mpint(m: &Mpint) -> Result<BoxedUint> {
+    m.as_positive_bytes()
+        .map(big)
+        .ok_or_else(|| Error::new("The RSA key holds a negative integer."))
+}
+
+fn crt_exponent(d: &BoxedUint, prime: &BoxedUint) -> Result<BoxedUint> {
+    let modulus = NonZero::new(prime.wrapping_sub(BoxedUint::one()))
+        .into_option()
+        .ok_or_else(|| Error::new("The RSA prime is not valid."))?;
+    Ok(d.rem_vartime(&modulus))
+}
+
 impl PrivateKey {
     pub fn from_pkcs8_der(der: &[u8]) -> Result<Self> {
-        let info = PrivateKeyInfo::from_der(der)?;
+        let info = PrivateKeyInfoRef::from_der(der)?;
         match info.algorithm.oid {
             RSA_ENCRYPTION => Ok(PrivateKey::Rsa(rsa::RsaPrivateKey::try_from(info)?)),
             ID_EC_PUBLIC_KEY => match info.algorithm.parameters_oid()? {
@@ -129,12 +152,13 @@ impl PrivateKey {
 
     pub fn to_encrypted_pkcs8_der(&self, password: &str) -> Result<Vec<u8>> {
         let der = self.to_pkcs8_der()?;
-        let info = PrivateKeyInfo::from_der(&der)?;
-        let salt = random_bytes(16);
-        let iv_vec = random_bytes(16);
+        let info = PrivateKeyInfoRef::from_der(&der)?;
+        let salt = random_bytes(16)?;
+        let iv_vec = random_bytes(16)?;
         let mut iv = [0u8; 16];
         iv.copy_from_slice(&iv_vec);
-        let params = pbes2::Parameters::pbkdf2_sha256_aes256cbc(PBKDF2_ITERATIONS, &salt, &iv)?;
+        let params =
+            pbes2::Parameters::generate_pbkdf2_sha256_aes256cbc(PBKDF2_ITERATIONS, &salt, iv)?;
         let doc = info.encrypt_with_params(params, password.as_bytes())?;
         Ok(doc.as_bytes().to_vec())
     }
@@ -150,12 +174,18 @@ impl PrivateKey {
 
     pub fn generate(alg: &str) -> Result<Self> {
         match alg {
-            "rsa2048" => Ok(PrivateKey::Rsa(rsa::RsaPrivateKey::new(&mut OsRng, 2048)?)),
-            "rsa3072" => Ok(PrivateKey::Rsa(rsa::RsaPrivateKey::new(&mut OsRng, 3072)?)),
-            "rsa4096" => Ok(PrivateKey::Rsa(rsa::RsaPrivateKey::new(&mut OsRng, 4096)?)),
-            "p256" => Ok(PrivateKey::P256(p256::SecretKey::random(&mut OsRng))),
-            "p384" => Ok(PrivateKey::P384(p384::SecretKey::random(&mut OsRng))),
-            "ed25519" => Ok(PrivateKey::Ed25519(ed25519_dalek::SigningKey::generate(&mut OsRng))),
+            "rsa2048" => Ok(PrivateKey::Rsa(rsa::RsaPrivateKey::new(&mut rng(), 2048)?)),
+            "rsa3072" => Ok(PrivateKey::Rsa(rsa::RsaPrivateKey::new(&mut rng(), 3072)?)),
+            "rsa4096" => Ok(PrivateKey::Rsa(rsa::RsaPrivateKey::new(&mut rng(), 4096)?)),
+            "p256" => Ok(PrivateKey::P256(p256::SecretKey::generate_from_rng(
+                &mut rng(),
+            ))),
+            "p384" => Ok(PrivateKey::P384(p384::SecretKey::generate_from_rng(
+                &mut rng(),
+            ))),
+            "ed25519" => Ok(PrivateKey::Ed25519(ed25519_dalek::SigningKey::generate(
+                &mut rng(),
+            ))),
             _ => Err(Error::new(
                 "The key algorithm must be one of rsa2048, rsa3072, rsa4096, p256, p384 or ed25519.",
             )),
@@ -166,7 +196,7 @@ impl PrivateKey {
         match self {
             PrivateKey::Rsa(_) => AlgorithmIdentifierOwned {
                 oid: SHA_256_WITH_RSA_ENCRYPTION,
-                parameters: Some(Any::from(AnyRef::NULL)),
+                parameters: Some(Any::null()),
             },
             PrivateKey::P256(_) | PrivateKey::P384(_) => AlgorithmIdentifierOwned {
                 oid: ECDSA_WITH_SHA_256,
@@ -211,11 +241,11 @@ impl PrivateKey {
         match self {
             PrivateKey::Rsa(k) => Ok(KeypairData::Rsa(RsaKeypair::try_from(k)?)),
             PrivateKey::P256(k) => Ok(KeypairData::Ecdsa(EcdsaKeypair::NistP256 {
-                public: k.public_key().to_encoded_point(false),
+                public: k.public_key().to_sec1_point(false),
                 private: k.clone().into(),
             })),
             PrivateKey::P384(k) => Ok(KeypairData::Ecdsa(EcdsaKeypair::NistP384 {
-                public: k.public_key().to_encoded_point(false),
+                public: k.public_key().to_sec1_point(false),
                 private: k.clone().into(),
             })),
             PrivateKey::Ed25519(k) => Ok(KeypairData::Ed25519(Ed25519Keypair::from(k))),
@@ -225,11 +255,11 @@ impl PrivateKey {
     pub fn from_ssh(data: &KeypairData) -> Result<Self> {
         match data {
             KeypairData::Rsa(k) => rsa_from_parts(
-                &k.public.n,
-                &k.public.e,
-                &k.private.d,
-                &k.private.p,
-                &k.private.q,
+                k.public().n(),
+                k.public().e(),
+                k.private().d(),
+                k.private().p(),
+                k.private().q(),
             ),
             KeypairData::Ecdsa(EcdsaKeypair::NistP256 { private, .. }) => Ok(PrivateKey::P256(
                 p256::SecretKey::from_slice(private.as_slice())?,
@@ -251,18 +281,17 @@ impl PrivateKey {
             PrivateKey::Rsa(k) => {
                 let p = &k.primes()[0];
                 let q = &k.primes()[1];
-                let one = BigUint::from(1u8);
-                let dp = k.d() % (p - &one);
-                let dq = k.d() % (q - &one);
+                let dp = crt_exponent(k.d(), p)?;
+                let dq = crt_exponent(k.d(), q)?;
                 let qi = k.crt_coefficient().ok_or_else(|| {
                     Error::new("The RSA key's CRT coefficient could not be computed.")
                 })?;
-                jwk.d = Some(pem::b64url_encode(&k.d().to_bytes_be()));
-                jwk.p = Some(pem::b64url_encode(&p.to_bytes_be()));
-                jwk.q = Some(pem::b64url_encode(&q.to_bytes_be()));
-                jwk.dp = Some(pem::b64url_encode(&dp.to_bytes_be()));
-                jwk.dq = Some(pem::b64url_encode(&dq.to_bytes_be()));
-                jwk.qi = Some(pem::b64url_encode(&qi.to_bytes_be()));
+                jwk.d = Some(pem::b64url_encode(&k.d().to_be_bytes_trimmed_vartime()));
+                jwk.p = Some(pem::b64url_encode(&p.to_be_bytes_trimmed_vartime()));
+                jwk.q = Some(pem::b64url_encode(&q.to_be_bytes_trimmed_vartime()));
+                jwk.dp = Some(pem::b64url_encode(&dp.to_be_bytes_trimmed_vartime()));
+                jwk.dq = Some(pem::b64url_encode(&dq.to_be_bytes_trimmed_vartime()));
+                jwk.qi = Some(pem::b64url_encode(&qi.to_be_bytes_trimmed_vartime()));
             }
             PrivateKey::P256(k) => jwk.d = Some(pem::b64url_encode(&k.to_bytes())),
             PrivateKey::P384(k) => jwk.d = Some(pem::b64url_encode(&k.to_bytes())),
@@ -273,16 +302,11 @@ impl PrivateKey {
 }
 
 fn rsa_from_parts(n: &Mpint, e: &Mpint, d: &Mpint, p: &Mpint, q: &Mpint) -> Result<PrivateKey> {
-    let big = |m: &Mpint| -> Result<BigUint> {
-        m.as_positive_bytes()
-            .map(BigUint::from_bytes_be)
-            .ok_or_else(|| Error::new("The RSA key holds a negative integer."))
-    };
     Ok(PrivateKey::Rsa(rsa::RsaPrivateKey::from_components(
-        big(n)?,
-        big(e)?,
-        big(d)?,
-        vec![big(p)?, big(q)?],
+        big_mpint(n)?,
+        big_mpint(e)?,
+        big_mpint(d)?,
+        vec![big_mpint(p)?, big_mpint(q)?],
     )?))
 }
 
@@ -323,7 +347,7 @@ impl PublicKey {
 
     pub fn bits(&self) -> u32 {
         match self {
-            PublicKey::Rsa(k) => k.n().bits() as u32,
+            PublicKey::Rsa(k) => k.n().bits(),
             PublicKey::P256(_) => 256,
             PublicKey::P384(_) => 384,
             PublicKey::Ed25519(_) => 256,
@@ -400,15 +424,15 @@ impl PublicKey {
 
     pub fn to_ssh(&self) -> Result<KeyData> {
         match self {
-            PublicKey::Rsa(k) => Ok(KeyData::Rsa(SshRsaPublicKey {
-                e: Mpint::try_from(k.e())?,
-                n: Mpint::try_from(k.n())?,
-            })),
+            PublicKey::Rsa(k) => Ok(KeyData::Rsa(SshRsaPublicKey::new(
+                Mpint::from(k.e()),
+                Mpint::from(k.n().as_ref()),
+            )?)),
             PublicKey::P256(k) => Ok(KeyData::Ecdsa(EcdsaPublicKey::NistP256(
-                k.to_encoded_point(false),
+                k.to_sec1_point(false),
             ))),
             PublicKey::P384(k) => Ok(KeyData::Ecdsa(EcdsaPublicKey::NistP384(
-                k.to_encoded_point(false),
+                k.to_sec1_point(false),
             ))),
             PublicKey::Ed25519(k) => Ok(KeyData::Ed25519(Ed25519PublicKey(k.to_bytes()))),
         }
@@ -416,17 +440,10 @@ impl PublicKey {
 
     pub fn from_ssh(data: &KeyData) -> Result<Self> {
         match data {
-            KeyData::Rsa(k) => {
-                let big = |m: &Mpint| -> Result<BigUint> {
-                    m.as_positive_bytes()
-                        .map(BigUint::from_bytes_be)
-                        .ok_or_else(|| Error::new("The RSA key holds a negative integer."))
-                };
-                Ok(PublicKey::Rsa(rsa::RsaPublicKey::new(
-                    big(&k.n)?,
-                    big(&k.e)?,
-                )?))
-            }
+            KeyData::Rsa(k) => Ok(PublicKey::Rsa(rsa::RsaPublicKey::new(
+                big_mpint(k.n())?,
+                big_mpint(k.e())?,
+            )?)),
             KeyData::Ecdsa(EcdsaPublicKey::NistP256(p)) => Ok(PublicKey::P256(
                 p256::PublicKey::from_sec1_bytes(p.as_bytes())?,
             )),
@@ -446,18 +463,18 @@ impl PublicKey {
         match self {
             PublicKey::Rsa(k) => {
                 jwk.kty = "RSA".to_string();
-                jwk.n = Some(pem::b64url_encode(&k.n().to_bytes_be()));
-                jwk.e = Some(pem::b64url_encode(&k.e().to_bytes_be()));
+                jwk.n = Some(pem::b64url_encode(&k.n_bytes()));
+                jwk.e = Some(pem::b64url_encode(&k.e_bytes()));
             }
             PublicKey::P256(k) => {
-                let point = k.to_encoded_point(false);
+                let point = k.to_sec1_point(false);
                 jwk.kty = "EC".to_string();
                 jwk.crv = Some("P-256".to_string());
                 jwk.x = point.x().map(|x| pem::b64url_encode(x));
                 jwk.y = point.y().map(|y| pem::b64url_encode(y));
             }
             PublicKey::P384(k) => {
-                let point = k.to_encoded_point(false);
+                let point = k.to_sec1_point(false);
                 jwk.kty = "EC".to_string();
                 jwk.crv = Some("P-384".to_string());
                 jwk.x = point.x().map(|x| pem::b64url_encode(x));
@@ -527,7 +544,7 @@ pub fn openssh_private_parse(text: &str, password: &str) -> Result<ParsedPrivate
 pub fn openssh_private_write(key: &PrivateKey, comment: &str, password: &str) -> Result<String> {
     let mut private = ssh_key::PrivateKey::new(key.to_ssh()?, comment)?;
     if !password.is_empty() {
-        private = private.encrypt(&mut OsRng, password)?;
+        private = private.encrypt(&mut SysRng, password)?;
     }
     Ok(private.to_openssh(LineEnding::LF)?.to_string())
 }
@@ -565,10 +582,9 @@ fn take_string<'a>(data: &'a [u8], pos: &mut usize) -> Result<&'a [u8]> {
     Ok(out)
 }
 
-fn put_mpint(out: &mut Vec<u8>, positive: &[u8]) -> Result<()> {
-    let m = Mpint::from_positive_bytes(positive)?;
+fn put_mpint(out: &mut Vec<u8>, positive: &[u8]) {
+    let m = Mpint::from_positive_bytes(positive);
     put_string(out, m.as_bytes());
-    Ok(())
 }
 
 struct PpkDerived {
@@ -651,11 +667,11 @@ fn aes_cbc(key: &[u8; 32], iv: &[u8; 16], buf: &mut [u8], encrypt: bool) -> Resu
     if encrypt {
         let len = buf.len();
         cbc::Encryptor::<aes::Aes256>::new(key.into(), iv.into())
-            .encrypt_padded_mut::<NoPadding>(buf, len)
+            .encrypt_padded::<NoPadding>(buf, len)
             .map_err(|_| Error::new("The AES-CBC block operation failed."))?;
     } else {
         cbc::Decryptor::<aes::Aes256>::new(key.into(), iv.into())
-            .decrypt_padded_mut::<NoPadding>(buf)
+            .decrypt_padded::<NoPadding>(buf)
             .map_err(|_| Error::new("The AES-CBC block operation failed."))?;
     }
     Ok(())
@@ -791,17 +807,12 @@ pub fn ppk_parse(text: &str, password: &str) -> Result<ParsedPrivate> {
             let d = take_string(&private_blob, &mut pos)?.to_vec();
             let p = take_string(&private_blob, &mut pos)?.to_vec();
             let q = take_string(&private_blob, &mut pos)?.to_vec();
-            let big = |b: &[u8]| -> Result<BigUint> {
-                Mpint::from_bytes(b)?
-                    .as_positive_bytes()
-                    .map(BigUint::from_bytes_be)
-                    .ok_or_else(|| Error::new("The RSA key holds a negative integer."))
-            };
+            let from_blob = |b: &[u8]| -> Result<BoxedUint> { big_mpint(&Mpint::from_bytes(b)?) };
             PrivateKey::Rsa(rsa::RsaPrivateKey::from_components(
-                k.n().clone(),
+                k.n().as_ref().clone(),
                 k.e().clone(),
-                big(&d)?,
-                vec![big(&p)?, big(&q)?],
+                from_blob(&d)?,
+                vec![from_blob(&p)?, from_blob(&q)?],
             )?)
         }
         PublicKey::P256(_) => {
@@ -853,13 +864,13 @@ pub fn ppk_write(key: &PrivateKey, comment: &str, password: &str) -> Result<Stri
     let mut private_blob = Vec::new();
     match &keypair {
         KeypairData::Rsa(k) => {
-            put_string(&mut private_blob, k.private.d.as_bytes());
-            put_string(&mut private_blob, k.private.p.as_bytes());
-            put_string(&mut private_blob, k.private.q.as_bytes());
-            put_string(&mut private_blob, k.private.iqmp.as_bytes());
+            put_string(&mut private_blob, k.private().d().as_bytes());
+            put_string(&mut private_blob, k.private().p().as_bytes());
+            put_string(&mut private_blob, k.private().q().as_bytes());
+            put_string(&mut private_blob, k.private().iqmp().as_bytes());
         }
-        KeypairData::Ecdsa(k) => put_mpint(&mut private_blob, k.private_key_bytes())?,
-        KeypairData::Ed25519(k) => put_mpint(&mut private_blob, k.private.as_ref())?,
+        KeypairData::Ecdsa(k) => put_mpint(&mut private_blob, k.private_key_bytes()),
+        KeypairData::Ed25519(k) => put_mpint(&mut private_blob, k.private.as_ref()),
         _ => return Err(unsupported_algorithm()),
     }
     let encrypted = !password.is_empty();
@@ -867,8 +878,8 @@ pub fn ppk_write(key: &PrivateKey, comment: &str, password: &str) -> Result<Stri
     let mut kdf_lines: Vec<String> = Vec::new();
     let derived = if encrypted {
         let pad = (16 - private_blob.len() % 16) % 16;
-        private_blob.extend_from_slice(&random_bytes(pad));
-        let salt = random_bytes(16);
+        private_blob.extend_from_slice(&random_bytes(pad)?);
+        let salt = random_bytes(16)?;
         kdf_lines.push("Key-Derivation: Argon2id".to_string());
         kdf_lines.push("Argon2-Memory: 8192".to_string());
         kdf_lines.push("Argon2-Passes: 13".to_string());
@@ -981,17 +992,16 @@ pub fn jwk_parse(text: &str) -> Result<ParsedJwk> {
     };
     match jwk.kty.as_str() {
         "RSA" => {
-            let n = BigUint::from_bytes_be(&field(&jwk.n, "n")?);
-            let e = BigUint::from_bytes_be(&field(&jwk.e, "e")?);
+            let n = big(&field(&jwk.n, "n")?);
+            let e = big(&field(&jwk.e, "e")?);
             let public = PublicKey::Rsa(rsa::RsaPublicKey::new(n.clone(), e.clone())?);
             let private = match &jwk.d {
                 Some(_) => {
-                    let d = BigUint::from_bytes_be(&field(&jwk.d, "d")?);
+                    let d = big(&field(&jwk.d, "d")?);
                     let primes = match (&jwk.p, &jwk.q) {
-                        (Some(_), Some(_)) => vec![
-                            BigUint::from_bytes_be(&field(&jwk.p, "p")?),
-                            BigUint::from_bytes_be(&field(&jwk.q, "q")?),
-                        ],
+                        (Some(_), Some(_)) => {
+                            vec![big(&field(&jwk.p, "p")?), big(&field(&jwk.q, "q")?)]
+                        }
                         _ => Vec::new(),
                     };
                     Some(PrivateKey::Rsa(rsa::RsaPrivateKey::from_components(

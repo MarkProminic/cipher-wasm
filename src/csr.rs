@@ -7,7 +7,7 @@ use der::{Decode, Encode};
 use spki::SubjectPublicKeyInfoOwned;
 use x509_cert::attr::Attribute;
 use x509_cert::ext::pkix::{ExtendedKeyUsage, SubjectAltName};
-use x509_cert::ext::{AsExtension, Extension};
+use x509_cert::ext::{Extension, ToExtension};
 use x509_cert::request::{CertReq, CertReqInfo, ExtensionReq, Version};
 
 pub fn parse(der: &[u8]) -> Result<CertReq> {
@@ -86,14 +86,18 @@ pub fn build(key: &PrivateKey, subject: &NameMap, sans: &[San], eku: &[String]) 
             .iter()
             .map(x509::san_to_general_name)
             .collect::<Result<Vec<_>>>()?;
-        exts.push(SubjectAltName(names).to_extension(&subject, &exts)?);
+        let san = SubjectAltName(names);
+        let ext = (&san).to_extension(&subject, &exts)?;
+        exts.push(ext);
     }
     if !eku.is_empty() {
         let oids = eku
             .iter()
             .map(|n| x509::eku_oid(n))
             .collect::<Result<Vec<_>>>()?;
-        exts.push(ExtendedKeyUsage(oids).to_extension(&subject, &exts)?);
+        let eku = ExtendedKeyUsage(oids);
+        let ext = (&eku).to_extension(&subject, &exts)?;
+        exts.push(ext);
     }
     if !exts.is_empty() {
         attributes.insert(Attribute::try_from(ExtensionReq(exts))?)?;

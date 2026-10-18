@@ -1,31 +1,29 @@
 use crate::error::{Error, Result};
 use crate::keys::{random_bytes, PrivateKey, PBKDF2_ITERATIONS};
 use cipher::block_padding::Pkcs7;
-use cipher::{BlockDecryptMut, BlockEncryptMut, InnerIvInit, KeyIvInit};
+use cipher::{BlockModeDecrypt, BlockModeEncrypt, InnerIvInit, KeyIvInit};
 use cms::content_info::{CmsVersion, ContentInfo};
 use cms::encrypted_data::EncryptedData;
 use cms::enveloped_data::EncryptedContentInfo;
 use const_oid::db::rfc5911::{ID_DATA, ID_ENCRYPTED_DATA};
 use const_oid::db::rfc5912::{ID_SHA_1, ID_SHA_256, ID_SHA_384, ID_SHA_512};
 use const_oid::ObjectIdentifier;
-use der::asn1::{Any, AnyRef, BmpString, OctetString, SetOfVec};
+use der::asn1::{Any, BmpString, OctetString, SetOfVec};
 use der::{Decode, Encode, Sequence};
-use digest::core_api::BlockSizeUser;
+use digest::block_api::BlockSizeUser;
 use digest::{Digest, FixedOutputReset};
-use hmac::{Mac, SimpleHmac};
-use pkcs12::cert_type::CertBag;
-use pkcs12::digest_info::DigestInfo;
+use hmac::{KeyInit, Mac, SimpleHmac};
 use pkcs12::kdf::{derive_key_utf8, Pkcs12KeyType};
-use pkcs12::mac_data::MacData;
 use pkcs12::pbe_params::{EncryptedPrivateKeyInfo, Pkcs12PbeParams};
 use pkcs12::pfx::{Pfx, Version};
 use pkcs12::{
-    PKCS_12_CERT_BAG_OID, PKCS_12_KEY_BAG_OID, PKCS_12_PBEWITH_SHAAND40_BIT_RC2_CBC,
-    PKCS_12_PBE_WITH_SHAAND128_BIT_RC2_CBC, PKCS_12_PBE_WITH_SHAAND2_KEY_TRIPLE_DES_CBC,
-    PKCS_12_PBE_WITH_SHAAND3_KEY_TRIPLE_DES_CBC, PKCS_12_PKCS8_KEY_BAG_OID, PKCS_12_X509_CERT_OID,
+    CertBag, DigestInfo, MacData, PKCS_12_CERT_BAG_OID, PKCS_12_KEY_BAG_OID,
+    PKCS_12_PBEWITH_SHAAND40_BIT_RC2_CBC, PKCS_12_PBE_WITH_SHAAND128_BIT_RC2_CBC,
+    PKCS_12_PBE_WITH_SHAAND2_KEY_TRIPLE_DES_CBC, PKCS_12_PBE_WITH_SHAAND3_KEY_TRIPLE_DES_CBC,
+    PKCS_12_PKCS8_KEY_BAG_OID, PKCS_12_X509_CERT_OID,
 };
 use pkcs5::pbes2;
-use pkcs8::PrivateKeyInfo;
+use pkcs8::PrivateKeyInfoRef;
 use sha1::Sha1;
 use sha2::{Sha256, Sha384, Sha512};
 use spki::AlgorithmIdentifierOwned;
@@ -57,7 +55,7 @@ fn wrong_password() -> Error {
 
 fn pkcs12_mac<D>(password: &str, salt: &[u8], iterations: i32, data: &[u8]) -> Result<Vec<u8>>
 where
-    D: Digest + FixedOutputReset + BlockSizeUser + Clone,
+    D: Digest + FixedOutputReset + BlockSizeUser,
 {
     let key = derive_key_utf8::<D>(
         password,
@@ -125,13 +123,13 @@ fn pbe1_decrypt(
         PKCS_12_PBE_WITH_SHAAND3_KEY_TRIPLE_DES_CBC => {
             cbc::Decryptor::<des::TdesEde3>::new_from_slices(&key, &iv)
                 .map_err(bad_key)?
-                .decrypt_padded_vec_mut::<Pkcs7>(ct)
+                .decrypt_padded_vec::<Pkcs7>(ct)
                 .map_err(bad)
         }
         PKCS_12_PBE_WITH_SHAAND2_KEY_TRIPLE_DES_CBC => {
             cbc::Decryptor::<des::TdesEde2>::new_from_slices(&key, &iv)
                 .map_err(bad_key)?
-                .decrypt_padded_vec_mut::<Pkcs7>(ct)
+                .decrypt_padded_vec::<Pkcs7>(ct)
                 .map_err(bad)
         }
         PKCS_12_PBEWITH_SHAAND40_BIT_RC2_CBC => cbc::Decryptor::<rc2::Rc2>::inner_iv_slice_init(
@@ -139,14 +137,14 @@ fn pbe1_decrypt(
             &iv,
         )
         .map_err(bad_key)?
-        .decrypt_padded_vec_mut::<Pkcs7>(ct)
+        .decrypt_padded_vec::<Pkcs7>(ct)
         .map_err(bad),
         PKCS_12_PBE_WITH_SHAAND128_BIT_RC2_CBC => cbc::Decryptor::<rc2::Rc2>::inner_iv_slice_init(
             rc2::Rc2::new_with_eff_key_len(&key, 128),
             &iv,
         )
         .map_err(bad_key)?
-        .decrypt_padded_vec_mut::<Pkcs7>(ct)
+        .decrypt_padded_vec::<Pkcs7>(ct)
         .map_err(bad),
         _ => Err(Error::new("The PFX encryption scheme is not supported.")),
     }
@@ -164,7 +162,7 @@ fn pbe1_encrypt(
         PKCS_12_PBE_WITH_SHAAND3_KEY_TRIPLE_DES_CBC => {
             Ok(cbc::Encryptor::<des::TdesEde3>::new_from_slices(&key, &iv)
                 .map_err(bad_key)?
-                .encrypt_padded_vec_mut::<Pkcs7>(pt))
+                .encrypt_padded_vec::<Pkcs7>(pt))
         }
         PKCS_12_PBEWITH_SHAAND40_BIT_RC2_CBC => {
             Ok(cbc::Encryptor::<rc2::Rc2>::inner_iv_slice_init(
@@ -172,7 +170,7 @@ fn pbe1_encrypt(
                 &iv,
             )
             .map_err(bad_key)?
-            .encrypt_padded_vec_mut::<Pkcs7>(pt))
+            .encrypt_padded_vec::<Pkcs7>(pt))
         }
         _ => Err(Error::new("The PFX encryption scheme is not supported.")),
     }
@@ -340,15 +338,15 @@ fn attributes(friendly_name: &str, key_id: &[u8]) -> Result<Attributes> {
     Ok(set)
 }
 
-fn pbes2_params<'a>(salt: &'a [u8], iv: &'a [u8; 16]) -> Result<pbes2::Parameters<'a>> {
-    Ok(pbes2::Parameters::pbkdf2_sha256_aes256cbc(
+fn pbes2_params(salt: &[u8], iv: [u8; 16]) -> Result<pbes2::Parameters> {
+    Ok(pbes2::Parameters::generate_pbkdf2_sha256_aes256cbc(
         PBKDF2_ITERATIONS,
         salt,
         iv,
     )?)
 }
 
-fn pbes2_algorithm(params: &pbes2::Parameters<'_>) -> Result<AlgorithmIdentifierOwned> {
+fn pbes2_algorithm(params: &pbes2::Parameters) -> Result<AlgorithmIdentifierOwned> {
     let der = pkcs5::EncryptionScheme::Pbes2(params.clone()).to_der()?;
     Ok(AlgorithmIdentifierOwned::from_der(&der)?)
 }
@@ -403,8 +401,8 @@ pub fn write(
         None => None,
     };
     let key_id: Vec<u8> = match &key_spki {
-        Some(spki) => sha1::Sha1::digest(spki).to_vec(),
-        None => sha1::Sha1::digest(certs.first().map(|c| c.as_slice()).unwrap_or(&[])).to_vec(),
+        Some(spki) => Sha1::digest(spki).to_vec(),
+        None => Sha1::digest(certs.first().map(|c| c.as_slice()).unwrap_or(&[])).to_vec(),
     };
     let mut infos: Vec<ContentInfo> = Vec::new();
     if !certs.is_empty() {
@@ -413,7 +411,7 @@ pub fn write(
         for der in certs {
             let cert = x509_cert::Certificate::from_der(der)?;
             let matches = match &key_spki {
-                Some(spki) => cert.tbs_certificate.subject_public_key_info.to_der()? == *spki,
+                Some(spki) => cert.tbs_certificate().subject_public_key_info().to_der()? == *spki,
                 None => !tagged,
             };
             let attrs = if matches && !tagged {
@@ -434,7 +432,7 @@ pub fn write(
         let plain = bags.to_der()?;
         let ci = if legacy {
             let params = Pkcs12PbeParams {
-                salt: OctetString::new(random_bytes(8))?,
+                salt: OctetString::new(random_bytes(8)?)?,
                 iterations: MAC_ITERATIONS,
             };
             let ct = pbe1_encrypt(
@@ -448,11 +446,11 @@ pub fn write(
                 ct,
             )?
         } else {
-            let salt = random_bytes(16);
-            let iv_vec = random_bytes(16);
+            let salt = random_bytes(16)?;
+            let iv_vec = random_bytes(16)?;
             let mut iv = [0u8; 16];
             iv.copy_from_slice(&iv_vec);
-            let params = pbes2_params(&salt, &iv)?;
+            let params = pbes2_params(&salt, iv)?;
             let ct = params.encrypt(password.as_bytes(), &plain)?;
             encrypted_data(pbes2_algorithm(&params)?, ct)?
         };
@@ -462,7 +460,7 @@ pub fn write(
         let pkcs8 = k.to_pkcs8_der()?;
         let epki_der = if legacy {
             let params = Pkcs12PbeParams {
-                salt: OctetString::new(random_bytes(8))?,
+                salt: OctetString::new(random_bytes(8)?)?,
                 iterations: MAC_ITERATIONS,
             };
             let ct = pbe1_encrypt(
@@ -480,12 +478,12 @@ pub fn write(
             }
             .to_der()?
         } else {
-            let salt = random_bytes(16);
-            let iv_vec = random_bytes(16);
+            let salt = random_bytes(16)?;
+            let iv_vec = random_bytes(16)?;
             let mut iv = [0u8; 16];
             iv.copy_from_slice(&iv_vec);
-            let params = pbes2_params(&salt, &iv)?;
-            let info = PrivateKeyInfo::from_der(&pkcs8)?;
+            let params = pbes2_params(&salt, iv)?;
+            let info = PrivateKeyInfoRef::from_der(&pkcs8)?;
             info.encrypt_with_params(params, password.as_bytes())?
                 .as_bytes()
                 .to_vec()
@@ -498,7 +496,7 @@ pub fn write(
         infos.push(data_content(vec![bag].to_der()?)?);
     }
     let auth_bytes = infos.to_der()?;
-    let mac_salt = random_bytes(8);
+    let mac_salt = random_bytes(8)?;
     let (mac_oid, digest) = if legacy {
         (
             ID_SHA_1,
@@ -517,7 +515,7 @@ pub fn write(
             mac: DigestInfo {
                 algorithm: AlgorithmIdentifierOwned {
                     oid: mac_oid,
-                    parameters: Some(Any::from(AnyRef::NULL)),
+                    parameters: Some(Any::null()),
                 },
                 digest: OctetString::new(digest)?,
             },

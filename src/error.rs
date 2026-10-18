@@ -77,6 +77,12 @@ impl From<ssh_key::Error> for Error {
     }
 }
 
+impl From<ssh_key::encoding::Error> for Error {
+    fn from(_: ssh_key::encoding::Error) -> Self {
+        Error::new("The SSH wire encoding is not valid.")
+    }
+}
+
 impl From<serde_wasm_bindgen::Error> for Error {
     fn from(e: serde_wasm_bindgen::Error) -> Self {
         Error::new(format!("The input shape is not valid: {}.", e))
@@ -86,6 +92,18 @@ impl From<serde_wasm_bindgen::Error> for Error {
 impl From<argon2::Error> for Error {
     fn from(_: argon2::Error) -> Self {
         Error::new("The Argon2 key derivation failed.")
+    }
+}
+
+impl From<x509_cert::builder::Error> for Error {
+    fn from(e: x509_cert::builder::Error) -> Self {
+        Error::new(format!("The certificate could not be built: {}.", e))
+    }
+}
+
+impl From<getrandom::Error> for Error {
+    fn from(_: getrandom::Error) -> Self {
+        Error::new("The random number source failed.")
     }
 }
 
