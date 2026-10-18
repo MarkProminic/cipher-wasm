@@ -38,7 +38,7 @@ cipher = { version = "0.4", features = ["alloc", "block-padding"] }
 digest = { version = "0.10", features = ["alloc"] }
 const-oid = { version = "0.9", features = ["db"] }
 base64ct = { version = "1", features = ["alloc"] }
-pem-rfc7468 = { version = "0.7", features = ["alloc"] }
+pem-rfc7468 = { version = "1.0", features = ["alloc"] }
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 serde = { version = "1", features = ["derive"] }
