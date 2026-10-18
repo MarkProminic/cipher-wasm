@@ -19,7 +19,7 @@ rsa = { version = "0.9", features = ["sha2", "sha1"] }
 p256 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdsa", "pkcs8", "alloc"] }
 p384 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdsa", "pkcs8", "alloc"] }
 ecdsa = { version = "0.16", default-features = false, features = ["der", "pkcs8", "alloc", "verifying", "signing"] }
-ed25519-dalek = { version = "2", default-features = false, features = ["alloc", "pkcs8", "rand_core", "zeroize"] }
+ed25519-dalek = { version = "3", default-features = false, features = ["alloc", "pkcs8", "rand_core", "zeroize"] }
 ed25519 = { version = "2", default-features = false, features = ["alloc", "pkcs8"] }
 ssh-key = { version = "0.6", default-features = false, features = ["alloc", "ecdsa", "ed25519", "rsa", "p256", "p384", "encryption"] }
 signature = { version = "2", features = ["alloc"] }
