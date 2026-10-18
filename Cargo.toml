@@ -9,7 +9,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 der = { version = "0.7", features = ["alloc", "oid", "pem", "derive"] }
 spki = { version = "0.7", features = ["alloc", "pem"] }
-x509-cert = { version = "0.2", default-features = false, features = ["pem", "builder"] }
+x509-cert = { version = "0.3", default-features = false, features = ["pem", "builder"] }
 pkcs1 = { version = "0.7", features = ["alloc", "pem", "pkcs8"] }
 pkcs8 = { version = "0.10", features = ["alloc", "pem", "encryption", "3des", "des-insecure", "sha1-insecure"] }
 pkcs5 = { version = "0.7", features = ["alloc", "pbes2", "3des", "des-insecure", "sha1-insecure"] }
