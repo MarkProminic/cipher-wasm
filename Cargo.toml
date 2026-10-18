@@ -17,7 +17,7 @@ pkcs12 = { version = "0.1", features = ["kdf"] }
 cms = { version = "0.2", default-features = false, features = ["alloc", "pem", "std"] }
 rsa = { version = "0.9", features = ["sha2", "sha1"] }
 p256 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdsa", "pkcs8", "alloc"] }
-p384 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdsa", "pkcs8", "alloc"] }
+p384 = { version = "0.14", default-features = false, features = ["arithmetic", "ecdsa", "pkcs8", "alloc"] }
 ecdsa = { version = "0.16", default-features = false, features = ["der", "pkcs8", "alloc", "verifying", "signing"] }
 ed25519-dalek = { version = "2", default-features = false, features = ["alloc", "pkcs8", "rand_core", "zeroize"] }
 ed25519 = { version = "2", default-features = false, features = ["alloc", "pkcs8"] }
