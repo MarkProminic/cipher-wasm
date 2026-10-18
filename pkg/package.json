@@ -1,0 +1,15 @@
+{
+  "name": "@startcloud/cipher-wasm",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "cipher_wasm_bg.wasm",
+    "cipher_wasm.js",
+    "cipher_wasm.d.ts"
+  ],
+  "main": "cipher_wasm.js",
+  "types": "cipher_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
