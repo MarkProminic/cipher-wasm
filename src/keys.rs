@@ -85,6 +85,19 @@ pub fn random_bytes(len: usize) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+pub fn random_iv() -> Result<[u8; 16]> {
+    random_bytes(16)?
+        .as_slice()
+        .try_into()
+        .map_err(|_| Error::new("The random number source answered a short block."))
+}
+
+fn block_of<const N: usize>(bytes: &[u8]) -> Result<[u8; N]> {
+    bytes
+        .try_into()
+        .map_err(|_| Error::new("The derived key material is too short."))
+}
+
 pub fn spki_sha256_hex(spki_der: &[u8]) -> String {
     pem::hex(&Sha256::digest(spki_der))
 }
@@ -180,9 +193,7 @@ impl PrivateKey {
         let der = self.to_pkcs8_der()?;
         let info = PrivateKeyInfoRef::from_der(&der)?;
         let salt = random_bytes(16)?;
-        let iv_vec = random_bytes(16)?;
-        let mut iv = [0u8; 16];
-        iv.copy_from_slice(&iv_vec);
+        let iv = random_iv()?;
         let params =
             pbes2::Parameters::generate_pbkdf2_sha256_aes256cbc(PBKDF2_ITERATIONS, &salt, iv)?;
         let doc = info.encrypt_with_params(params, password.as_bytes())?;
@@ -706,7 +717,7 @@ struct PpkDerived {
     mac_key: Vec<u8>,
 }
 
-fn ppk_v2_derive(password: &str) -> PpkDerived {
+fn ppk_v2_derive(password: &str) -> Result<PpkDerived> {
     let mut material = Vec::with_capacity(40);
     for counter in [[0u8, 0, 0, 0], [0u8, 0, 0, 1]] {
         let mut h = Sha1::new();
@@ -714,16 +725,14 @@ fn ppk_v2_derive(password: &str) -> PpkDerived {
         h.update(password.as_bytes());
         material.extend_from_slice(&h.finalize());
     }
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&material[..32]);
     let mut h = Sha1::new();
     h.update(b"putty-private-key-file-mac-key");
     h.update(password.as_bytes());
-    PpkDerived {
-        key,
-        iv: [0u8; 16],
+    Ok(PpkDerived {
+        key: block_of(&material[..32])?,
+        iv: Default::default(),
         mac_key: h.finalize().to_vec(),
-    }
+    })
 }
 
 fn ppk_v3_derive(
@@ -748,15 +757,18 @@ fn ppk_v3_derive(
     let argon = Argon2::new(alg, ArgonVersion::V0x13, params);
     let mut out = [0u8; 80];
     argon.hash_password_into(password.as_bytes(), salt, &mut out)?;
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&out[..32]);
-    let mut iv = [0u8; 16];
-    iv.copy_from_slice(&out[32..48]);
     Ok(PpkDerived {
-        key,
-        iv,
+        key: block_of(&out[..32])?,
+        iv: block_of(&out[32..48])?,
         mac_key: out[48..].to_vec(),
     })
+}
+
+fn mac_key_of(derived: &Option<PpkDerived>) -> &[u8] {
+    derived
+        .as_ref()
+        .map(|d| d.mac_key.as_slice())
+        .unwrap_or(&[])
 }
 
 fn ppk_mac(version: u8, mac_key: &[u8], fields: &[&[u8]]) -> Result<Vec<u8>> {
@@ -861,8 +873,8 @@ pub fn ppk_parse(text: &str, password: &str) -> Result<ParsedPrivate> {
             encrypted: true,
         });
     }
-    let derived = if version == 2 {
-        ppk_v2_derive(password)
+    let derived: Option<PpkDerived> = if version == 2 {
+        Some(ppk_v2_derive(password)?)
     } else if encrypted {
         let int = |name: &str| -> Result<u32> {
             get(name)
@@ -873,30 +885,26 @@ pub fn ppk_parse(text: &str, password: &str) -> Result<ParsedPrivate> {
         let salt = pem::unhex(
             get("Argon2-Salt").ok_or_else(|| Error::new("The PPK file has no Argon2 salt."))?,
         )?;
-        ppk_v3_derive(
+        Some(ppk_v3_derive(
             password,
             get("Key-Derivation").unwrap_or("Argon2id"),
             int("Argon2-Memory")?,
             int("Argon2-Passes")?,
             int("Argon2-Parallelism")?,
             &salt,
-        )?
+        )?)
     } else {
-        PpkDerived {
-            key: [0u8; 32],
-            iv: [0u8; 16],
-            mac_key: Vec::new(),
-        }
+        None
     };
-    if encrypted {
+    if let Some(d) = derived.as_ref().filter(|_| encrypted) {
         if private_blob.len() % 16 != 0 {
             return Err(Error::new("The PPK private blob is not block aligned."));
         }
-        aes_cbc(&derived.key, &derived.iv, &mut private_blob, false)?;
+        aes_cbc(&d.key, &d.iv, &mut private_blob, false)?;
     }
     let mac = ppk_mac(
         version,
-        &derived.mac_key,
+        mac_key_of(&derived),
         &[
             algorithm.as_bytes(),
             encryption.as_bytes(),
@@ -997,7 +1005,7 @@ pub fn ppk_write(key: &PrivateKey, comment: &str, password: &str) -> Result<Stri
     let encrypted = !password.is_empty();
     let encryption = if encrypted { "aes256-cbc" } else { "none" };
     let mut kdf_lines: Vec<String> = Vec::new();
-    let derived = if encrypted {
+    let derived: Option<PpkDerived> = if encrypted {
         let pad = (16 - private_blob.len() % 16) % 16;
         private_blob.extend_from_slice(&random_bytes(pad)?);
         let salt = random_bytes(16)?;
@@ -1006,17 +1014,13 @@ pub fn ppk_write(key: &PrivateKey, comment: &str, password: &str) -> Result<Stri
         kdf_lines.push("Argon2-Passes: 13".to_string());
         kdf_lines.push("Argon2-Parallelism: 1".to_string());
         kdf_lines.push(format!("Argon2-Salt: {}", pem::hex(&salt)));
-        ppk_v3_derive(password, "Argon2id", 8192, 13, 1, &salt)?
+        Some(ppk_v3_derive(password, "Argon2id", 8192, 13, 1, &salt)?)
     } else {
-        PpkDerived {
-            key: [0u8; 32],
-            iv: [0u8; 16],
-            mac_key: Vec::new(),
-        }
+        None
     };
     let mac = ppk_mac(
         3,
-        &derived.mac_key,
+        mac_key_of(&derived),
         &[
             algorithm.as_bytes(),
             encryption.as_bytes(),
@@ -1025,8 +1029,8 @@ pub fn ppk_write(key: &PrivateKey, comment: &str, password: &str) -> Result<Stri
             &private_blob,
         ],
     )?;
-    if encrypted {
-        aes_cbc(&derived.key, &derived.iv, &mut private_blob, true)?;
+    if let Some(d) = &derived {
+        aes_cbc(&d.key, &d.iv, &mut private_blob, true)?;
     }
     let mut out = String::new();
     out.push_str(&format!("PuTTY-User-Key-File-3: {}\n", algorithm));

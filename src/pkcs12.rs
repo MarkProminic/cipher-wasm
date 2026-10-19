@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::keys::{random_bytes, PrivateKey, PBKDF2_ITERATIONS};
+use crate::keys::{random_bytes, random_iv, PrivateKey, PBKDF2_ITERATIONS};
 use cipher::block_padding::Pkcs7;
 use cipher::{BlockModeDecrypt, BlockModeEncrypt, InnerIvInit, KeyIvInit};
 use cms::content_info::{CmsVersion, ContentInfo};
@@ -447,10 +447,7 @@ pub fn write(
             )?
         } else {
             let salt = random_bytes(16)?;
-            let iv_vec = random_bytes(16)?;
-            let mut iv = [0u8; 16];
-            iv.copy_from_slice(&iv_vec);
-            let params = pbes2_params(&salt, iv)?;
+            let params = pbes2_params(&salt, random_iv()?)?;
             let ct = params.encrypt(password.as_bytes(), &plain)?;
             encrypted_data(pbes2_algorithm(&params)?, ct)?
         };
@@ -479,10 +476,7 @@ pub fn write(
             .to_der()?
         } else {
             let salt = random_bytes(16)?;
-            let iv_vec = random_bytes(16)?;
-            let mut iv = [0u8; 16];
-            iv.copy_from_slice(&iv_vec);
-            let params = pbes2_params(&salt, iv)?;
+            let params = pbes2_params(&salt, random_iv()?)?;
             let info = PrivateKeyInfoRef::from_der(&pkcs8)?;
             info.encrypt_with_params(params, password.as_bytes())?
                 .as_bytes()
