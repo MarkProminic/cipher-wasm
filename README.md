@@ -18,7 +18,7 @@ cargo install wasm-pack
 wasm-pack build --target web --release --out-dir pkg --out-name cipher_wasm --scope startcloud
 ```
 
-`pkg/` is the package `@startcloud/cipher-wasm`; startcloud-ui vendors it under `vendor/cipher-wasm` from the release tarball `cipher-wasm-<version>.tar.gz`.
+`pkg/` is the package `@startcloud/cipher-wasm`, build output that is never committed: the release workflow builds it on the runner and uploads it as `cipher-wasm-<version>.tar.gz`, its `package.json` carrying the version `Cargo.toml` carries, and startcloud-ui vendors that tarball under `vendor/cipher-wasm` on the release's dispatch.
 
 ## Checks
 
