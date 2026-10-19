@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/MarkProminic/cipher-wasm/compare/v0.2.0...v0.2.1) (2026-10-19)
+
+
+### Bug Fixes
+
+* pkg/ built on the release runner and never committed, the tarball the one artifact, release-please no longer bumping pkg/package.json since wasm-pack writes it from Cargo.toml, prettier ignoring target, pkg and the changelog ([782c73d](https://github.com/MarkProminic/cipher-wasm/commit/782c73d1d7046eaa9762818e3fd8352e3ba93fd4))
+
 ## [0.2.0](https://github.com/MarkProminic/cipher-wasm/compare/v0.1.0...v0.2.0) (2026-10-19)
 
 
