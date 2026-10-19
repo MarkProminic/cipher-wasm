@@ -176,6 +176,11 @@ pub fn issue(p: Issue<'_>) -> Result<Vec<u8>> {
             .build::<_, ecdsa::der::Signature<p256::NistP256>>(&p256::ecdsa::SigningKey::from(k))?,
         PrivateKey::P384(k) => builder
             .build::<_, ecdsa::der::Signature<p384::NistP384>>(&p384::ecdsa::SigningKey::from(k))?,
+        PrivateKey::P521(k) => builder
+            .build::<_, ecdsa::der::Signature<p521::NistP521>>(&p521::ecdsa::SigningKey::from(k))?,
+        PrivateKey::K256(k) => builder.build::<_, ecdsa::der::Signature<k256::Secp256k1>>(
+            &k256::ecdsa::SigningKey::from(k),
+        )?,
         PrivateKey::Ed25519(k) => builder.build::<_, ed25519_dalek::Signature>(k)?,
     };
     Ok(cert.to_der()?)

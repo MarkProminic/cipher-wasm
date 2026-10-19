@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize, Serializer};
 #[derive(Serialize, Clone, Debug)]
 #[serde(untagged)]
 pub enum AnyFacts {
-    Cert(Facts),
+    Cert(Box<Facts>),
     Key(KeyFacts),
 }
 
@@ -46,7 +46,7 @@ pub fn cert_component(der: &[u8]) -> Result<Component> {
         kind: x509::kind(&facts).to_string(),
         der_b64: pem::b64_encode(der),
         pem: pem::join("CERTIFICATE", der)?,
-        facts: Some(AnyFacts::Cert(facts)),
+        facts: Some(AnyFacts::Cert(Box::new(facts))),
     })
 }
 
@@ -56,7 +56,7 @@ pub fn csr_component(der: &[u8]) -> Result<Component> {
         kind: "csr".to_string(),
         der_b64: pem::b64_encode(der),
         pem: pem::join("CERTIFICATE REQUEST", der)?,
-        facts: Some(AnyFacts::Cert(facts)),
+        facts: Some(AnyFacts::Cert(Box::new(facts))),
     })
 }
 
@@ -96,7 +96,9 @@ fn ssh_cert_component(text: &str) -> Result<Component> {
         kind: "ssh_certificate".to_string(),
         der_b64: pem::b64_encode(&raw),
         pem: format!("{}\n", text.trim()),
-        facts: Some(AnyFacts::Cert(x509::ssh_certificate_facts(&cert, &raw)?)),
+        facts: Some(AnyFacts::Cert(Box::new(x509::ssh_certificate_facts(
+            &cert, &raw,
+        )?))),
     })
 }
 

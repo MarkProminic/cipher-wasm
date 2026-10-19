@@ -18,10 +18,12 @@ cms = { version = "=0.3.0-pre.1", default-features = false, features = ["std"] }
 rsa = { version = "0.10.0-rc.19", features = ["sha2", "sha1"] }
 p256 = { version = "0.14", default-features = false, features = ["arithmetic", "ecdsa", "pkcs8", "alloc"] }
 p384 = { version = "0.14", default-features = false, features = ["arithmetic", "ecdsa", "pkcs8", "alloc"] }
+p521 = { version = "0.14", default-features = false, features = ["arithmetic", "ecdsa", "pkcs8", "alloc"] }
+k256 = { version = "0.14", default-features = false, features = ["arithmetic", "ecdsa", "pkcs8", "alloc"] }
 ecdsa = { version = "0.17", default-features = false, features = ["der", "pkcs8", "alloc"] }
 ed25519-dalek = { version = "3", default-features = false, features = ["alloc", "pkcs8", "rand_core", "zeroize"] }
 ed25519 = { version = "3", default-features = false, features = ["alloc", "pkcs8"] }
-ssh-key = { version = "0.7.0-rc.11", default-features = false, features = ["alloc", "ecdsa", "ed25519", "rsa", "p256", "p384", "encryption"] }
+ssh-key = { version = "0.7.0-rc.11", default-features = false, features = ["alloc", "ecdsa", "ed25519", "rsa", "p256", "p384", "p521", "encryption"] }
 signature = { version = "3", features = ["alloc"] }
 rand_core = "0.10"
 getrandom = { version = "0.4", features = ["wasm_js", "sys_rng"] }

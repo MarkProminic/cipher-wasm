@@ -1,5 +1,5 @@
 {
-  "name": "@startcloud/cipher-wasm",
+  "name": "cipher-wasm",
   "type": "module",
   "version": "0.1.0",
   "files": [

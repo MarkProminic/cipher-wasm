@@ -190,9 +190,11 @@ dependencies = [
  "getrandom",
  "hmac",
  "js-sys",
+ "k256",
  "md5",
  "p256",
  "p384",
+ "p521",
  "pem-rfc7468",
  "pkcs1",
  "pkcs12",
@@ -563,6 +565,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "k256"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93f50113171a713f4a4231ef82eb26703607139b35dcb56241f0ceab2ae1f7d8"
+dependencies = [
+ "cpubits",
+ "ecdsa",
+ "elliptic-curve",
+ "primeorder",
+ "sha2",
+ "wnaf",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -611,6 +627,20 @@ dependencies = [
  "ecdsa",
  "elliptic-curve",
  "fiat-crypto",
+ "primefield",
+ "primeorder",
+ "sha2",
+]
+
+[[package]]
+name = "p521"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ad64cc32c2dc466317c12ee5853e61f159f9eab1fe7efade0395dc2e7b43449"
+dependencies = [
+ "base16ct",
+ "ecdsa",
+ "elliptic-curve",
  "primefield",
  "primeorder",
  "sha2",
@@ -1033,6 +1063,7 @@ dependencies = [
  "ed25519-dalek",
  "p256",
  "p384",
+ "p521",
  "rand_core",
  "rsa",
  "sec1",
