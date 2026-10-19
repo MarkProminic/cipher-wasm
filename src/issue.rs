@@ -220,7 +220,9 @@ pub fn issue(p: Issue<'_>) -> Result<Vec<u8>> {
             &k256::ecdsa::SigningKey::from(k),
         )?,
         PrivateKey::Ed25519(k) => builder.build::<_, ed25519_dalek::Signature>(k)?,
-        PrivateKey::Ed448(k) => builder.build::<_, ed448_goldilocks::Signature>(&Ed448Signer(k))?,
+        PrivateKey::Ed448(k) => {
+            builder.build::<_, ed448_goldilocks::Signature>(&Ed448Signer(k.as_ref()))?
+        }
     };
     Ok(cert.to_der()?)
 }

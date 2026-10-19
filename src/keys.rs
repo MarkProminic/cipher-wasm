@@ -63,7 +63,7 @@ pub enum PrivateKey {
     P521(p521::SecretKey),
     K256(k256::SecretKey),
     Ed25519(ed25519_dalek::SigningKey),
-    Ed448(ed448_goldilocks::SigningKey),
+    Ed448(Box<ed448_goldilocks::SigningKey>),
 }
 
 pub enum PublicKey {
@@ -145,9 +145,9 @@ impl PrivateKey {
             ID_ED_25519 => Ok(PrivateKey::Ed25519(ed25519_dalek::SigningKey::try_from(
                 info,
             )?)),
-            ID_ED_448 => Ok(PrivateKey::Ed448(ed448_goldilocks::SigningKey::try_from(
-                info,
-            )?)),
+            ID_ED_448 => Ok(PrivateKey::Ed448(Box::new(
+                ed448_goldilocks::SigningKey::try_from(info)?,
+            ))),
             _ => Err(unsupported_algorithm()),
         }
     }
@@ -249,9 +249,9 @@ impl PrivateKey {
             "ed25519" => Ok(PrivateKey::Ed25519(ed25519_dalek::SigningKey::generate(
                 &mut rng(),
             ))),
-            "ed448" => Ok(PrivateKey::Ed448(
+            "ed448" => Ok(PrivateKey::Ed448(Box::new(
                 ed448_goldilocks::SigningKey::generate_from_rng(&mut rng()),
-            )),
+            ))),
             _ => Err(Error::new(
                 "The key algorithm must be one of rsa2048, rsa3072, rsa4096, p256, p384, p521, secp256k1, ed25519 or ed448.",
             )),
@@ -1330,11 +1330,11 @@ pub fn jwk_parse(text: &str) -> Result<ParsedJwk> {
                 let private = match &jwk.d {
                     Some(_) => {
                         let d = field(&jwk.d, "d")?;
-                        Some(PrivateKey::Ed448(
+                        Some(PrivateKey::Ed448(Box::new(
                             ed448_goldilocks::SigningKey::try_from(d.as_slice()).map_err(|_| {
                                 Error::new("The Ed448 private key must be 57 bytes.")
                             })?,
-                        ))
+                        )))
                     }
                     None => None,
                 };
