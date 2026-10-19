@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/MarkProminic/cipher-wasm/compare/v0.2.1...v0.3.0) (2026-10-19)
+
+
+### Features
+
+* Ed448 keys read, written, generated, signed and verified across PKCS[#8](https://github.com/MarkProminic/cipher-wasm/issues/8), SPKI and JWK, RSASSA-PSS as a signature scheme on make_csr, self_sign and sign_csr and verified from the signature's own parameters, the README naming every algorithm ([c574260](https://github.com/MarkProminic/cipher-wasm/commit/c574260ca64ed1e91bac006ec240ec3d3baf6a42))
+
+
+### Bug Fixes
+
+* the Ed448 private key boxed so the key enum stays small ([be02e14](https://github.com/MarkProminic/cipher-wasm/commit/be02e1472339a8dbc59268e30647696f32cbe4b4))
+
 ## [0.2.1](https://github.com/MarkProminic/cipher-wasm/compare/v0.2.0...v0.2.1) (2026-10-19)
 
 
