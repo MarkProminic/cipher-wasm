@@ -1,6 +1,6 @@
 use crate::csr;
 use crate::error::{Error, Result};
-use crate::keys::{random_bytes, PrivateKey, PublicKey};
+use crate::keys::{random_bytes, rng, PrivateKey, PublicKey, Scheme};
 use crate::x509::{self, NameMap, San};
 use const_oid::{AssociatedOid, ObjectIdentifier};
 use der::asn1::OctetString;
@@ -8,7 +8,11 @@ use der::flagset::FlagSet;
 use der::{DateTime, Decode, Encode};
 use sha1::{Digest, Sha1};
 use sha2::Sha256;
-use spki::{SubjectPublicKeyInfoOwned, SubjectPublicKeyInfoRef};
+use signature::{Keypair, Signer};
+use spki::{
+    AlgorithmIdentifierOwned, DynSignatureAlgorithmIdentifier, SubjectPublicKeyInfoOwned,
+    SubjectPublicKeyInfoRef,
+};
 use x509_cert::builder::profile::BuilderProfile;
 use x509_cert::builder::{Builder, CertificateBuilder};
 use x509_cert::ext::pkix::name::GeneralName;
@@ -22,14 +26,20 @@ use x509_cert::serial_number::SerialNumber;
 use x509_cert::time::{Time, Validity};
 use x509_cert::TbsCertificate;
 
-pub struct Issue<'a> {
-    pub signer: &'a PrivateKey,
-    pub issuer_name: Name,
-    pub subject: Name,
-    pub subject_key: &'a PublicKey,
+#[derive(Clone, Copy)]
+pub struct Term {
     pub days: u32,
     pub is_ca: bool,
     pub path_len: Option<u8>,
+}
+
+pub struct Issue<'a> {
+    pub signer: &'a PrivateKey,
+    pub scheme: Scheme,
+    pub issuer_name: Name,
+    pub subject: Name,
+    pub subject_key: &'a PublicKey,
+    pub term: Term,
     pub sans: Vec<San>,
     pub eku: Vec<String>,
     pub extra: Vec<Extension>,
@@ -48,6 +58,28 @@ struct Profile {
 
 fn key_identifier(spki: SubjectPublicKeyInfoRef<'_>) -> Vec<u8> {
     Sha1::digest(spki.subject_public_key.raw_bytes()).to_vec()
+}
+
+struct Ed448Signer<'a>(&'a ed448_goldilocks::SigningKey);
+
+impl Keypair for Ed448Signer<'_> {
+    type VerifyingKey = ed448_goldilocks::VerifyingKey;
+
+    fn verifying_key(&self) -> Self::VerifyingKey {
+        self.0.verifying_key()
+    }
+}
+
+impl DynSignatureAlgorithmIdentifier for Ed448Signer<'_> {
+    fn signature_algorithm_identifier(&self) -> spki::Result<AlgorithmIdentifierOwned> {
+        self.0.signature_algorithm_identifier()
+    }
+}
+
+impl Signer<ed448_goldilocks::Signature> for Ed448Signer<'_> {
+    fn try_sign(&self, msg: &[u8]) -> signature::Result<ed448_goldilocks::Signature> {
+        self.0.try_sign(msg)
+    }
 }
 
 impl BuilderProfile for Profile {
@@ -124,7 +156,7 @@ fn now_secs() -> u64 {
 }
 
 pub fn issue(p: Issue<'_>) -> Result<Vec<u8>> {
-    if p.days == 0 {
+    if p.term.days == 0 {
         return Err(Error::new("The validity in days must be at least one."));
     }
     let mut serial = random_bytes(20)?;
@@ -135,11 +167,11 @@ pub fn issue(p: Issue<'_>) -> Result<Vec<u8>> {
     let serial_number = SerialNumber::new(&serial)?;
     let start = now_secs();
     let end = start
-        .checked_add(u64::from(p.days) * 86_400)
+        .checked_add(u64::from(p.term.days) * 86_400)
         .ok_or_else(|| Error::new("The validity period is too long."))?;
     let validity = Validity::new(time_from_secs(start)?, time_from_secs(end)?);
     let subject_spki = SubjectPublicKeyInfoOwned::from_der(&p.subject_key.to_spki_der()?)?;
-    let key_usage = if p.is_ca {
+    let key_usage = if p.term.is_ca {
         KeyUsages::KeyCertSign | KeyUsages::CRLSign | KeyUsages::DigitalSignature
     } else {
         match p.subject_key {
@@ -160,8 +192,8 @@ pub fn issue(p: Issue<'_>) -> Result<Vec<u8>> {
     let profile = Profile {
         issuer: p.issuer_name,
         subject: p.subject,
-        is_ca: p.is_ca,
-        path_len: p.path_len,
+        is_ca: p.term.is_ca,
+        path_len: p.term.path_len,
         key_usage,
         sans,
         eku,
@@ -169,9 +201,15 @@ pub fn issue(p: Issue<'_>) -> Result<Vec<u8>> {
     };
     let builder = CertificateBuilder::new(profile, serial_number, validity, subject_spki)?;
     let cert = match p.signer {
-        PrivateKey::Rsa(k) => builder.build::<_, rsa::pkcs1v15::Signature>(
-            &rsa::pkcs1v15::SigningKey::<Sha256>::new(k.clone()),
-        )?,
+        PrivateKey::Rsa(k) => match p.scheme {
+            Scheme::Pkcs1 => builder.build::<_, rsa::pkcs1v15::Signature>(
+                &rsa::pkcs1v15::SigningKey::<Sha256>::new(k.clone()),
+            )?,
+            Scheme::Pss => builder.build_with_rng::<_, rsa::pss::Signature, _>(
+                &rsa::pss::SigningKey::<Sha256>::new(k.clone()),
+                &mut rng(),
+            )?,
+        },
         PrivateKey::P256(k) => builder
             .build::<_, ecdsa::der::Signature<p256::NistP256>>(&p256::ecdsa::SigningKey::from(k))?,
         PrivateKey::P384(k) => builder
@@ -182,30 +220,29 @@ pub fn issue(p: Issue<'_>) -> Result<Vec<u8>> {
             &k256::ecdsa::SigningKey::from(k),
         )?,
         PrivateKey::Ed25519(k) => builder.build::<_, ed25519_dalek::Signature>(k)?,
+        PrivateKey::Ed448(k) => builder.build::<_, ed448_goldilocks::Signature>(&Ed448Signer(k))?,
     };
     Ok(cert.to_der()?)
 }
 
 pub fn self_sign(
     key_der: &[u8],
+    scheme: Scheme,
     subject: &NameMap,
     sans: Vec<San>,
     eku: Vec<String>,
-    days: u32,
-    is_ca: bool,
-    path_len: Option<u8>,
+    term: Term,
 ) -> Result<Vec<u8>> {
     let key = PrivateKey::from_pkcs8_der(key_der)?;
     let public = key.public_key();
     let name = x509::name_from_map(subject)?;
     issue(Issue {
         signer: &key,
+        scheme,
         issuer_name: name.clone(),
         subject: name,
         subject_key: &public,
-        days,
-        is_ca,
-        path_len,
+        term,
         sans,
         eku,
         extra: Vec::new(),
@@ -216,9 +253,8 @@ pub fn sign_csr(
     csr_der: &[u8],
     ca_cert_der: &[u8],
     ca_key_der: &[u8],
-    days: u32,
-    is_ca: bool,
-    path_len: Option<u8>,
+    scheme: Scheme,
+    term: Term,
     copy_extensions: bool,
 ) -> Result<Vec<u8>> {
     let req = csr::parse(csr_der)?;
@@ -246,12 +282,11 @@ pub fn sign_csr(
     };
     issue(Issue {
         signer: &ca_key,
+        scheme,
         issuer_name: ca_cert.tbs_certificate().subject().clone(),
         subject: req.info.subject.clone(),
         subject_key: &subject_key,
-        days,
-        is_ca,
-        path_len,
+        term,
         sans,
         eku,
         extra,

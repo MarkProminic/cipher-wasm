@@ -87,6 +87,8 @@ pub fn generate_key(alg: &str) -> core::result::Result<JsValue, JsError> {
 #[derive(Deserialize)]
 struct CsrInput {
     key_der_b64: String,
+    #[serde(default)]
+    signature: keys::Scheme,
     subject: NameMap,
     #[serde(default)]
     sans: Vec<San>,
@@ -104,7 +106,13 @@ struct CsrOutput {
 pub fn make_csr(input: JsValue) -> core::result::Result<JsValue, JsError> {
     let input: CsrInput = from_js(input)?;
     let key = keys::PrivateKey::from_pkcs8_der(&pem::b64_decode(&input.key_der_b64)?)?;
-    let der = csr::build(&key, &input.subject, &input.sans, &input.ext_key_usage)?;
+    let der = csr::build(
+        &key,
+        input.signature,
+        &input.subject,
+        &input.sans,
+        &input.ext_key_usage,
+    )?;
     let out = CsrOutput {
         der_b64: pem::b64_encode(&der),
         pem: pem::join("CERTIFICATE REQUEST", &der)?,
@@ -115,6 +123,8 @@ pub fn make_csr(input: JsValue) -> core::result::Result<JsValue, JsError> {
 #[derive(Deserialize)]
 struct SelfSignInput {
     key_der_b64: String,
+    #[serde(default)]
+    signature: keys::Scheme,
     subject: NameMap,
     #[serde(default)]
     sans: Vec<San>,
@@ -148,12 +158,15 @@ pub fn self_sign(input: JsValue) -> core::result::Result<JsValue, JsError> {
     let input: SelfSignInput = from_js(input)?;
     let der = issue::self_sign(
         &pem::b64_decode(&input.key_der_b64)?,
+        input.signature,
         &input.subject,
         input.sans,
         input.ext_key_usage,
-        input.days,
-        input.is_ca,
-        input.path_len,
+        issue::Term {
+            days: input.days,
+            is_ca: input.is_ca,
+            path_len: input.path_len,
+        },
     )?;
     Ok(issued(der)?)
 }
@@ -163,6 +176,8 @@ struct SignCsrInput {
     csr_der_b64: String,
     ca_cert_der_b64: String,
     ca_key_der_b64: String,
+    #[serde(default)]
+    signature: keys::Scheme,
     days: u32,
     #[serde(default)]
     is_ca: bool,
@@ -179,9 +194,12 @@ pub fn sign_csr(input: JsValue) -> core::result::Result<JsValue, JsError> {
         &pem::b64_decode(&input.csr_der_b64)?,
         &pem::b64_decode(&input.ca_cert_der_b64)?,
         &pem::b64_decode(&input.ca_key_der_b64)?,
-        input.days,
-        input.is_ca,
-        input.path_len,
+        input.signature,
+        issue::Term {
+            days: input.days,
+            is_ca: input.is_ca,
+            path_len: input.path_len,
+        },
         input.copy_extensions,
     )?;
     Ok(issued(der)?)

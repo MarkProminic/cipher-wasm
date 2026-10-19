@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::keys::{PrivateKey, PublicKey};
+use crate::keys::{PrivateKey, PublicKey, Scheme};
 use crate::x509::{self, Facts, NameMap, San};
 use const_oid::db::rfc5912::ID_EXTENSION_REQ;
 use der::asn1::{BitString, SetOfVec};
@@ -27,7 +27,7 @@ pub fn verify(req: &CertReq) -> bool {
         Ok(i) => i,
         Err(_) => return false,
     };
-    key.verify(req.algorithm.oid, &info, req.signature.raw_bytes())
+    key.verify(&req.algorithm, &info, req.signature.raw_bytes())
 }
 
 pub fn extensions(req: &CertReq) -> Vec<Extension> {
@@ -76,7 +76,13 @@ pub fn facts(der: &[u8]) -> Result<Facts> {
     })
 }
 
-pub fn build(key: &PrivateKey, subject: &NameMap, sans: &[San], eku: &[String]) -> Result<Vec<u8>> {
+pub fn build(
+    key: &PrivateKey,
+    scheme: Scheme,
+    subject: &NameMap,
+    sans: &[San],
+    eku: &[String],
+) -> Result<Vec<u8>> {
     let subject = x509::name_from_map(subject)?;
     let public_key = SubjectPublicKeyInfoOwned::from_der(&key.public_key().to_spki_der()?)?;
     let mut attributes: SetOfVec<Attribute> = SetOfVec::new();
@@ -108,10 +114,10 @@ pub fn build(key: &PrivateKey, subject: &NameMap, sans: &[San], eku: &[String]) 
         public_key,
         attributes,
     };
-    let signature = key.sign(&info.to_der()?)?;
+    let signature = key.sign(scheme, &info.to_der()?)?;
     let req = CertReq {
         info,
-        algorithm: key.signature_algorithm(),
+        algorithm: key.signature_algorithm(scheme)?,
         signature: BitString::from_bytes(&signature)?,
     };
     Ok(req.to_der()?)

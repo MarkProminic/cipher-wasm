@@ -4,7 +4,7 @@ The certificate engine of the STARTcloud UI's Certificates feature: a Rust crate
 
 ## What it reads and writes
 
-PEM, DER, PKCS#7, PKCS#8, PKCS#12 with AES-256 and the legacy RC2 and 3DES ciphers, PuTTY PPK v2 and v3, OpenSSH and JWK keys; RSA, EC P-256, EC P-384 and Ed25519.
+PEM, DER, PKCS#7, PKCS#8, PKCS#12 with AES-256 and the legacy RC2 and 3DES ciphers, PuTTY PPK v2 and v3, OpenSSH and JWK keys; RSA signing with PKCS#1 v1.5 or RSASSA-PSS, EC P-256, P-384, P-521 and secp256k1, Ed25519 and Ed448.
 
 ## What it answers
 

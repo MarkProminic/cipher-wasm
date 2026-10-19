@@ -4,21 +4,22 @@ use argon2::{Algorithm as ArgonAlgorithm, Argon2, Params as ArgonParams, Version
 use cipher::block_padding::NoPadding;
 use cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit};
 use const_oid::db::rfc5912::{
-    ECDSA_WITH_SHA_256, ECDSA_WITH_SHA_384, ECDSA_WITH_SHA_512, ID_EC_PUBLIC_KEY, RSA_ENCRYPTION,
-    SECP_256_R_1, SECP_384_R_1, SECP_521_R_1, SHA_1_WITH_RSA_ENCRYPTION,
-    SHA_256_WITH_RSA_ENCRYPTION, SHA_384_WITH_RSA_ENCRYPTION, SHA_512_WITH_RSA_ENCRYPTION,
+    ECDSA_WITH_SHA_256, ECDSA_WITH_SHA_384, ECDSA_WITH_SHA_512, ID_EC_PUBLIC_KEY, ID_RSASSA_PSS,
+    ID_SHA_1, ID_SHA_256, ID_SHA_384, ID_SHA_512, RSA_ENCRYPTION, SECP_256_R_1, SECP_384_R_1,
+    SECP_521_R_1, SHA_1_WITH_RSA_ENCRYPTION, SHA_256_WITH_RSA_ENCRYPTION,
+    SHA_384_WITH_RSA_ENCRYPTION, SHA_512_WITH_RSA_ENCRYPTION,
 };
-use const_oid::db::rfc8410::ID_ED_25519;
+use const_oid::db::rfc8410::{ID_ED_25519, ID_ED_448};
 use const_oid::{AssociatedOid, ObjectIdentifier};
 use crypto_bigint::{BoxedUint, NonZero};
 use der::asn1::Any;
 use der::Decode;
-use digest::Digest;
+use digest::{Digest, FixedOutputReset};
 use getrandom::SysRng;
 use hmac::{Hmac, KeyInit, Mac};
 use p256::elliptic_curve::sec1::ToSec1Point;
 use p256::elliptic_curve::Generate;
-use pkcs1::{DecodeRsaPrivateKey, EncodeRsaPrivateKey};
+use pkcs1::{DecodeRsaPrivateKey, EncodeRsaPrivateKey, RsaPssParamsOwned};
 use pkcs5::pbes2;
 use pkcs8::{EncodePrivateKey, PrivateKeyInfoRef};
 use rand_core::UnwrapErr;
@@ -27,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use sha2::{Sha256, Sha384, Sha512};
 use signature::hazmat::{PrehashSigner, PrehashVerifier};
-use signature::{SignatureEncoding, Signer, Verifier};
+use signature::{RandomizedSigner, SignatureEncoding, Signer, Verifier};
 use spki::{AlgorithmIdentifierOwned, EncodePublicKey, SubjectPublicKeyInfoRef};
 use ssh_key::private::{EcdsaKeypair, Ed25519Keypair, KeypairData, RsaKeypair};
 use ssh_key::public::{EcdsaPublicKey, Ed25519PublicKey, KeyData, RsaPublicKey as SshRsaPublicKey};
@@ -47,6 +48,14 @@ pub struct KeyFacts {
     pub has_private: bool,
 }
 
+#[derive(Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Scheme {
+    #[default]
+    Pkcs1,
+    Pss,
+}
+
 pub enum PrivateKey {
     Rsa(rsa::RsaPrivateKey),
     P256(p256::SecretKey),
@@ -54,6 +63,7 @@ pub enum PrivateKey {
     P521(p521::SecretKey),
     K256(k256::SecretKey),
     Ed25519(ed25519_dalek::SigningKey),
+    Ed448(ed448_goldilocks::SigningKey),
 }
 
 pub enum PublicKey {
@@ -63,19 +73,20 @@ pub enum PublicKey {
     P521(p521::PublicKey),
     K256(k256::PublicKey),
     Ed25519(ed25519_dalek::VerifyingKey),
+    Ed448(ed448_goldilocks::VerifyingKey),
 }
 
 fn unsupported_algorithm() -> Error {
     Error::new(
-        "The key algorithm is not supported; only RSA, P-256, P-384, P-521, secp256k1 and Ed25519 are.",
+        "The key algorithm is not supported; only RSA, P-256, P-384, P-521, secp256k1, Ed25519 and Ed448 are.",
     )
 }
 
-fn no_ssh_form() -> Error {
-    Error::new("secp256k1 keys have no SSH form.")
+fn no_ssh_form(algorithm: &str) -> Error {
+    Error::new(format!("{} keys have no SSH form.", algorithm))
 }
 
-fn rng() -> UnwrapErr<SysRng> {
+pub fn rng() -> UnwrapErr<SysRng> {
     UnwrapErr(SysRng)
 }
 
@@ -134,6 +145,9 @@ impl PrivateKey {
             ID_ED_25519 => Ok(PrivateKey::Ed25519(ed25519_dalek::SigningKey::try_from(
                 info,
             )?)),
+            ID_ED_448 => Ok(PrivateKey::Ed448(ed448_goldilocks::SigningKey::try_from(
+                info,
+            )?)),
             _ => Err(unsupported_algorithm()),
         }
     }
@@ -174,6 +188,7 @@ impl PrivateKey {
             PrivateKey::P521(k) => k.to_pkcs8_der()?,
             PrivateKey::K256(k) => k.to_pkcs8_der()?,
             PrivateKey::Ed25519(k) => k.to_pkcs8_der()?,
+            PrivateKey::Ed448(k) => k.to_pkcs8_der()?,
         };
         Ok(doc.as_bytes().to_vec())
     }
@@ -185,7 +200,9 @@ impl PrivateKey {
             PrivateKey::P384(k) => Ok(("EC PRIVATE KEY", k.to_sec1_der()?.to_vec())),
             PrivateKey::P521(k) => Ok(("EC PRIVATE KEY", k.to_sec1_der()?.to_vec())),
             PrivateKey::K256(k) => Ok(("EC PRIVATE KEY", k.to_sec1_der()?.to_vec())),
-            PrivateKey::Ed25519(_) => Err(Error::new("Ed25519 keys have no PKCS#1 or SEC1 form.")),
+            PrivateKey::Ed25519(_) | PrivateKey::Ed448(_) => Err(Error::new(
+                "Ed25519 and Ed448 keys have no PKCS#1 or SEC1 form.",
+            )),
         }
     }
 
@@ -208,6 +225,7 @@ impl PrivateKey {
             PrivateKey::P521(k) => PublicKey::P521(k.public_key()),
             PrivateKey::K256(k) => PublicKey::K256(k.public_key()),
             PrivateKey::Ed25519(k) => PublicKey::Ed25519(k.verifying_key()),
+            PrivateKey::Ed448(k) => PublicKey::Ed448(k.verifying_key()),
         }
     }
 
@@ -231,44 +249,61 @@ impl PrivateKey {
             "ed25519" => Ok(PrivateKey::Ed25519(ed25519_dalek::SigningKey::generate(
                 &mut rng(),
             ))),
+            "ed448" => Ok(PrivateKey::Ed448(
+                ed448_goldilocks::SigningKey::generate_from_rng(&mut rng()),
+            )),
             _ => Err(Error::new(
-                "The key algorithm must be one of rsa2048, rsa3072, rsa4096, p256, p384, p521, secp256k1 or ed25519.",
+                "The key algorithm must be one of rsa2048, rsa3072, rsa4096, p256, p384, p521, secp256k1, ed25519 or ed448.",
             )),
         }
     }
 
-    pub fn signature_algorithm(&self) -> AlgorithmIdentifierOwned {
+    pub fn signature_algorithm(&self, scheme: Scheme) -> Result<AlgorithmIdentifierOwned> {
         match self {
-            PrivateKey::Rsa(_) => AlgorithmIdentifierOwned {
-                oid: SHA_256_WITH_RSA_ENCRYPTION,
-                parameters: Some(Any::null()),
+            PrivateKey::Rsa(_) => match scheme {
+                Scheme::Pkcs1 => Ok(AlgorithmIdentifierOwned {
+                    oid: SHA_256_WITH_RSA_ENCRYPTION,
+                    parameters: Some(Any::null()),
+                }),
+                Scheme::Pss => Ok(rsa::pss::get_default_pss_signature_algo_id::<Sha256>()?),
             },
-            PrivateKey::P256(_) | PrivateKey::K256(_) => AlgorithmIdentifierOwned {
+            PrivateKey::P256(_) | PrivateKey::K256(_) => Ok(AlgorithmIdentifierOwned {
                 oid: ECDSA_WITH_SHA_256,
                 parameters: None,
-            },
-            PrivateKey::P384(_) => AlgorithmIdentifierOwned {
+            }),
+            PrivateKey::P384(_) => Ok(AlgorithmIdentifierOwned {
                 oid: ECDSA_WITH_SHA_384,
                 parameters: None,
-            },
-            PrivateKey::P521(_) => AlgorithmIdentifierOwned {
+            }),
+            PrivateKey::P521(_) => Ok(AlgorithmIdentifierOwned {
                 oid: ECDSA_WITH_SHA_512,
                 parameters: None,
-            },
-            PrivateKey::Ed25519(_) => AlgorithmIdentifierOwned {
+            }),
+            PrivateKey::Ed25519(_) => Ok(AlgorithmIdentifierOwned {
                 oid: ID_ED_25519,
                 parameters: None,
-            },
+            }),
+            PrivateKey::Ed448(_) => Ok(AlgorithmIdentifierOwned {
+                oid: ID_ED_448,
+                parameters: None,
+            }),
         }
     }
 
-    pub fn sign(&self, message: &[u8]) -> Result<Vec<u8>> {
+    pub fn sign(&self, scheme: Scheme, message: &[u8]) -> Result<Vec<u8>> {
         match self {
-            PrivateKey::Rsa(k) => {
-                let signer = rsa::pkcs1v15::SigningKey::<Sha256>::new(k.clone());
-                let sig: rsa::pkcs1v15::Signature = signer.try_sign(message)?;
-                Ok(sig.to_vec())
-            }
+            PrivateKey::Rsa(k) => match scheme {
+                Scheme::Pkcs1 => {
+                    let signer = rsa::pkcs1v15::SigningKey::<Sha256>::new(k.clone());
+                    let sig: rsa::pkcs1v15::Signature = signer.try_sign(message)?;
+                    Ok(sig.to_vec())
+                }
+                Scheme::Pss => {
+                    let signer = rsa::pss::SigningKey::<Sha256>::new(k.clone());
+                    let sig: rsa::pss::Signature = signer.try_sign_with_rng(&mut rng(), message)?;
+                    Ok(sig.to_vec())
+                }
+            },
             PrivateKey::P256(k) => {
                 let signer = p256::ecdsa::SigningKey::from(k);
                 let sig: p256::ecdsa::Signature = signer.sign_prehash(&Sha256::digest(message))?;
@@ -293,6 +328,10 @@ impl PrivateKey {
                 let sig: ed25519_dalek::Signature = k.try_sign(message)?;
                 Ok(sig.to_bytes().to_vec())
             }
+            PrivateKey::Ed448(k) => {
+                let sig: ed448_goldilocks::Signature = k.try_sign(message)?;
+                Ok(sig.to_bytes().to_vec())
+            }
         }
     }
 
@@ -315,8 +354,9 @@ impl PrivateKey {
                 public: k.public_key().to_sec1_point(false),
                 private: k.clone().into(),
             })),
-            PrivateKey::K256(_) => Err(no_ssh_form()),
+            PrivateKey::K256(_) => Err(no_ssh_form("secp256k1")),
             PrivateKey::Ed25519(k) => Ok(KeypairData::Ed25519(Ed25519Keypair::from(k))),
+            PrivateKey::Ed448(_) => Err(no_ssh_form("Ed448")),
         }
     }
 
@@ -369,6 +409,7 @@ impl PrivateKey {
             PrivateKey::P521(k) => jwk.d = Some(pem::b64url_encode(&k.to_bytes())),
             PrivateKey::K256(k) => jwk.d = Some(pem::b64url_encode(&k.to_bytes())),
             PrivateKey::Ed25519(k) => jwk.d = Some(pem::b64url_encode(&k.to_bytes())),
+            PrivateKey::Ed448(k) => jwk.d = Some(pem::b64url_encode(&k.to_bytes()[..])),
         }
         Ok(jwk)
     }
@@ -398,6 +439,9 @@ impl PublicKey {
             ID_ED_25519 => Ok(PublicKey::Ed25519(ed25519_dalek::VerifyingKey::try_from(
                 spki,
             )?)),
+            ID_ED_448 => Ok(PublicKey::Ed448(ed448_goldilocks::VerifyingKey::try_from(
+                spki,
+            )?)),
             _ => Err(unsupported_algorithm()),
         }
     }
@@ -410,6 +454,7 @@ impl PublicKey {
             PublicKey::P521(k) => k.to_public_key_der()?,
             PublicKey::K256(k) => k.to_public_key_der()?,
             PublicKey::Ed25519(k) => k.to_public_key_der()?,
+            PublicKey::Ed448(k) => k.to_public_key_der()?,
         };
         Ok(doc.as_bytes().to_vec())
     }
@@ -421,6 +466,7 @@ impl PublicKey {
                 "EC"
             }
             PublicKey::Ed25519(_) => "Ed25519",
+            PublicKey::Ed448(_) => "Ed448",
         }
     }
 
@@ -432,6 +478,7 @@ impl PublicKey {
             PublicKey::P521(_) => 521,
             PublicKey::K256(_) => 256,
             PublicKey::Ed25519(_) => 256,
+            PublicKey::Ed448(_) => 448,
         }
     }
 
@@ -443,6 +490,7 @@ impl PublicKey {
             PublicKey::P521(_) => Some("P-521".to_string()),
             PublicKey::K256(_) => Some("secp256k1".to_string()),
             PublicKey::Ed25519(_) => Some("Ed25519".to_string()),
+            PublicKey::Ed448(_) => Some("Ed448".to_string()),
         }
     }
 
@@ -458,11 +506,12 @@ impl PublicKey {
 
     pub fn verify(
         &self,
-        signature_oid: ObjectIdentifier,
+        algorithm: &AlgorithmIdentifierOwned,
         message: &[u8],
         signature: &[u8],
     ) -> bool {
-        match (self, signature_oid) {
+        match (self, algorithm.oid) {
+            (PublicKey::Rsa(k), ID_RSASSA_PSS) => pss_verify(k, algorithm, message, signature),
             (PublicKey::Rsa(k), SHA_256_WITH_RSA_ENCRYPTION) => {
                 rsa_verify::<Sha256>(k, &Sha256::digest(message), signature)
             }
@@ -521,6 +570,12 @@ impl PublicKey {
                     Err(_) => false,
                 }
             }
+            (PublicKey::Ed448(k), ID_ED_448) => {
+                match ed448_goldilocks::Signature::from_slice(signature) {
+                    Ok(sig) => k.verify_raw(&sig, message).is_ok(),
+                    Err(_) => false,
+                }
+            }
             _ => false,
         }
     }
@@ -540,8 +595,9 @@ impl PublicKey {
             PublicKey::P521(k) => Ok(KeyData::Ecdsa(EcdsaPublicKey::NistP521(
                 k.to_sec1_point(false),
             ))),
-            PublicKey::K256(_) => Err(no_ssh_form()),
+            PublicKey::K256(_) => Err(no_ssh_form("secp256k1")),
             PublicKey::Ed25519(k) => Ok(KeyData::Ed25519(Ed25519PublicKey(k.to_bytes()))),
+            PublicKey::Ed448(_) => Err(no_ssh_form("Ed448")),
         }
     }
 
@@ -609,6 +665,11 @@ impl PublicKey {
                 jwk.crv = Some("Ed25519".to_string());
                 jwk.x = Some(pem::b64url_encode(k.as_bytes()));
             }
+            PublicKey::Ed448(k) => {
+                jwk.kty = "OKP".to_string();
+                jwk.crv = Some("Ed448".to_string());
+                jwk.x = Some(pem::b64url_encode(k.as_bytes()));
+            }
         }
         Ok(jwk)
     }
@@ -623,6 +684,46 @@ fn rsa_verify<D: Digest + AssociatedOid>(
     match rsa::pkcs1v15::Signature::try_from(signature) {
         Ok(sig) => vk.verify_prehash(digest, &sig).is_ok(),
         Err(_) => false,
+    }
+}
+
+fn pss_params(algorithm: &AlgorithmIdentifierOwned) -> Option<RsaPssParamsOwned> {
+    match &algorithm.parameters {
+        Some(params) => params.decode_as::<RsaPssParamsOwned>().ok(),
+        None => Some(RsaPssParamsOwned::default()),
+    }
+}
+
+fn pss_verify_with<D: Digest + FixedOutputReset>(
+    key: &rsa::RsaPublicKey,
+    salt_len: usize,
+    digest: &[u8],
+    signature: &[u8],
+) -> bool {
+    let vk = rsa::pss::VerifyingKey::<D>::new_with_salt_len(key.clone(), salt_len);
+    match rsa::pss::Signature::try_from(signature) {
+        Ok(sig) => vk.verify_prehash(digest, &sig).is_ok(),
+        Err(_) => false,
+    }
+}
+
+fn pss_verify(
+    key: &rsa::RsaPublicKey,
+    algorithm: &AlgorithmIdentifierOwned,
+    message: &[u8],
+    signature: &[u8],
+) -> bool {
+    let params = match pss_params(algorithm) {
+        Some(p) => p,
+        None => return false,
+    };
+    let salt_len = usize::from(params.salt_len);
+    match params.hash.oid {
+        ID_SHA_256 => pss_verify_with::<Sha256>(key, salt_len, &Sha256::digest(message), signature),
+        ID_SHA_384 => pss_verify_with::<Sha384>(key, salt_len, &Sha384::digest(message), signature),
+        ID_SHA_512 => pss_verify_with::<Sha512>(key, salt_len, &Sha512::digest(message), signature),
+        ID_SHA_1 => pss_verify_with::<Sha1>(key, salt_len, &Sha1::digest(message), signature),
+        _ => false,
     }
 }
 
@@ -957,7 +1058,8 @@ pub fn ppk_parse(text: &str, password: &str) -> Result<ParsedPrivate> {
                 .ok_or_else(|| Error::new("The EC scalar is negative."))?;
             PrivateKey::P521(p521::SecretKey::from_slice(bytes)?)
         }
-        PublicKey::K256(_) => return Err(no_ssh_form()),
+        PublicKey::K256(_) => return Err(no_ssh_form("secp256k1")),
+        PublicKey::Ed448(_) => return Err(no_ssh_form("Ed448")),
         PublicKey::Ed25519(_) => {
             let raw = take_string(&private_blob, &mut pos)?;
             let m = Mpint::from_bytes(raw)?;
@@ -1189,34 +1291,57 @@ pub fn jwk_parse(text: &str) -> Result<ParsedJwk> {
                 )),
             }
         }
-        "OKP" => {
-            if jwk.crv.as_deref() != Some("Ed25519") {
-                return Err(Error::new("The JWK OKP curve must be Ed25519."));
+        "OKP" => match jwk.crv.as_deref() {
+            Some("Ed25519") => {
+                let x = field(&jwk.x, "x")?;
+                let x_arr: [u8; 32] = x
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| Error::new("The Ed25519 public key must be 32 bytes."))?;
+                let public = PublicKey::Ed25519(
+                    ed25519_dalek::VerifyingKey::from_bytes(&x_arr)
+                        .map_err(|_| Error::new("The Ed25519 public key is not a valid point."))?,
+                );
+                let private = match &jwk.d {
+                    Some(_) => {
+                        let d = field(&jwk.d, "d")?;
+                        let seed: [u8; 32] = d
+                            .as_slice()
+                            .try_into()
+                            .map_err(|_| Error::new("The Ed25519 private key must be 32 bytes."))?;
+                        Some(PrivateKey::Ed25519(ed25519_dalek::SigningKey::from_bytes(
+                            &seed,
+                        )))
+                    }
+                    None => None,
+                };
+                Ok(ParsedJwk { public, private })
             }
-            let x = field(&jwk.x, "x")?;
-            let x_arr: [u8; 32] = x
-                .as_slice()
-                .try_into()
-                .map_err(|_| Error::new("The Ed25519 public key must be 32 bytes."))?;
-            let public = PublicKey::Ed25519(
-                ed25519_dalek::VerifyingKey::from_bytes(&x_arr)
-                    .map_err(|_| Error::new("The Ed25519 public key is not a valid point."))?,
-            );
-            let private = match &jwk.d {
-                Some(_) => {
-                    let d = field(&jwk.d, "d")?;
-                    let seed: [u8; 32] = d
-                        .as_slice()
-                        .try_into()
-                        .map_err(|_| Error::new("The Ed25519 private key must be 32 bytes."))?;
-                    Some(PrivateKey::Ed25519(ed25519_dalek::SigningKey::from_bytes(
-                        &seed,
-                    )))
-                }
-                None => None,
-            };
-            Ok(ParsedJwk { public, private })
-        }
+            Some("Ed448") => {
+                let x = field(&jwk.x, "x")?;
+                let x_arr: [u8; 57] = x
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| Error::new("The Ed448 public key must be 57 bytes."))?;
+                let public = PublicKey::Ed448(
+                    ed448_goldilocks::VerifyingKey::from_bytes(&x_arr)
+                        .map_err(|_| Error::new("The Ed448 public key is not a valid point."))?,
+                );
+                let private = match &jwk.d {
+                    Some(_) => {
+                        let d = field(&jwk.d, "d")?;
+                        Some(PrivateKey::Ed448(
+                            ed448_goldilocks::SigningKey::try_from(d.as_slice()).map_err(|_| {
+                                Error::new("The Ed448 private key must be 57 bytes.")
+                            })?,
+                        ))
+                    }
+                    None => None,
+                };
+                Ok(ParsedJwk { public, private })
+            }
+            _ => Err(Error::new("The JWK OKP curve must be Ed25519 or Ed448.")),
+        },
         _ => Err(Error::new("The JWK key type must be RSA, EC or OKP.")),
     }
 }

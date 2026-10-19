@@ -10,7 +10,7 @@ use const_oid::db::rfc5912::{
     MD_5_WITH_RSA_ENCRYPTION, SHA_1_WITH_RSA_ENCRYPTION, SHA_224_WITH_RSA_ENCRYPTION,
     SHA_256_WITH_RSA_ENCRYPTION, SHA_384_WITH_RSA_ENCRYPTION, SHA_512_WITH_RSA_ENCRYPTION,
 };
-use const_oid::db::rfc8410::ID_ED_25519;
+use const_oid::db::rfc8410::{ID_ED_25519, ID_ED_448};
 use const_oid::db::DB;
 use const_oid::{AssociatedOid, ObjectIdentifier};
 use der::asn1::{Any, Ia5String, OctetString};
@@ -217,6 +217,7 @@ pub fn signature_name(oid: &ObjectIdentifier) -> String {
         ECDSA_WITH_SHA_512 => "ecdsa-with-SHA512".to_string(),
         ECDSA_WITH_SHA_224 => "ecdsa-with-SHA224".to_string(),
         ID_ED_25519 => "Ed25519".to_string(),
+        ID_ED_448 => "Ed448".to_string(),
         other => other.to_string(),
     }
 }
@@ -359,7 +360,7 @@ pub fn verify_with_key(cert: &Certificate, issuer_key: &PublicKey) -> bool {
         Err(_) => return false,
     };
     issuer_key.verify(
-        cert.signature_algorithm().oid,
+        cert.signature_algorithm(),
         &tbs,
         cert.signature().raw_bytes(),
     )

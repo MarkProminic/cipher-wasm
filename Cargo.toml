@@ -23,6 +23,7 @@ k256 = { version = "0.14", default-features = false, features = ["arithmetic", "
 ecdsa = { version = "0.17", default-features = false, features = ["der", "pkcs8", "alloc"] }
 ed25519-dalek = { version = "3", default-features = false, features = ["alloc", "pkcs8", "rand_core", "zeroize"] }
 ed25519 = { version = "3", default-features = false, features = ["alloc", "pkcs8"] }
+ed448-goldilocks = { version = "0.14.0-pre.15", default-features = false, features = ["alloc", "pkcs8", "signing"] }
 ssh-key = { version = "0.7.0-rc.11", default-features = false, features = ["alloc", "ecdsa", "ed25519", "rsa", "p256", "p384", "p521", "encryption"] }
 signature = { version = "3", features = ["alloc"] }
 rand_core = "0.10"
